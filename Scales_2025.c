@@ -140,28 +140,7 @@ static void digit_0(uint8_t *buffer) {
     buffer[7] = mirror(0b01110000);
 }
 
-// static void digit_0(uint8_t *buffer) {
-//     buffer[0] = mirror(0b01111000);
-//     buffer[1] = 0;
-//     buffer[2] = 0;
-//     buffer[3] = 0;
-//     buffer[4] = 0;
-//     buffer[5] = 0;
-//     buffer[6] = 0;
-//     buffer[7] = 0;
-// }
-
-void initialize() {
-    stdio_init_all();
-    int rc = pico_led_init();
-    hard_assert(rc == PICO_OK);
-}
-
-int main() {
-    initialize();
-
-    LEDBlink(2);
-
+static void initSPI() {
     // This example will use SPI0 at 1MHz.
     spi_init(spi_default, 1 * 1000 * 1000);
     gpio_set_function(PICO_DEFAULT_SPI_SCK_PIN, GPIO_FUNC_SPI);
@@ -177,14 +156,31 @@ int main() {
 
     // Make the CS pin available to picotool
     bi_decl(bi_1pin_with_name(PICO_DEFAULT_SPI_CSN_PIN, "SPI CS"));
+}
 
+static void init7219() {
     // Send init sequence to device
     write_register_all(CMD_SHUTDOWN, 0);
     write_register_all(CMD_DISPLAYTEST, 0);
     write_register_all(CMD_SCANLIMIT, 7);   // Use all lines
     write_register_all(CMD_DECODEMODE, 0);  // No BCD decode, just use bit pattern.
-    write_register_all(CMD_BRIGHTNESS, 4);
+    write_register_all(CMD_BRIGHTNESS, 1);
     write_register_all(CMD_SHUTDOWN, 1);
+}
+
+void initialize() {
+    stdio_init_all();
+    int rc = pico_led_init();
+    hard_assert(rc == PICO_OK);
+    initSPI();
+    init7219();
+}
+
+int main() {
+
+    initialize();
+
+    LEDBlink(2);
 
     bool on = true;
 
