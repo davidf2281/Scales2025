@@ -129,7 +129,7 @@ static uint8_t mirror(uint8_t b) {
     return b;
 }
 
-static void digit_0(uint8_t *buffer) {
+static void fillDigit0Buffer(uint8_t *buffer) {
     buffer[0] = mirror(0b01110000);
     buffer[1] = mirror(0b10001000);
     buffer[2] = mirror(0b10001000);
@@ -138,6 +138,17 @@ static void digit_0(uint8_t *buffer) {
     buffer[5] = mirror(0b10001000);
     buffer[6] = mirror(0b10001000);
     buffer[7] = mirror(0b01110000);
+}
+
+static void fillDigit1Buffer(uint8_t *buffer) {
+    buffer[0] = mirror(0b00010000);
+    buffer[1] = mirror(0b00110000);
+    buffer[2] = mirror(0b01010000);
+    buffer[3] = mirror(0b00010000);
+    buffer[4] = mirror(0b00010000);
+    buffer[5] = mirror(0b00010000);
+    buffer[6] = mirror(0b00010000);
+    buffer[7] = mirror(0b00111000);
 }
 
 static void initSPI() {
@@ -182,10 +193,12 @@ int main() {
 
     LEDBlink(2);
 
+    uint32_t displayBuffer[8];
+
     bool on = true;
 
     uint8_t digitBuffer[8];
-    digit_0(digitBuffer);
+    fillDigit0Buffer(digitBuffer);
 
     while (true) {
         if (on) {
@@ -198,14 +211,6 @@ int main() {
             write_register_all(CMD_SCANLINE_6, 0);
             write_register_all(CMD_SCANLINE_7, 0);
         } else {
-            // write_register_all(CMD_SCANLINE_0, digitBuffer[0]);
-            // write_register_all(CMD_SCANLINE_1, 0);
-            // write_register_all(CMD_SCANLINE_2, 0);
-            // write_register_all(CMD_SCANLINE_3, 0);
-            // write_register_all(CMD_SCANLINE_4, 0);
-            // write_register_all(CMD_SCANLINE_5, 0);
-            // write_register_all(CMD_SCANLINE_6, 0);
-            // write_register_all(CMD_SCANLINE_7, 0);
             write_digit_all(digitBuffer);
         }
 
