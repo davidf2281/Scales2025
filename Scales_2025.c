@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "characters.c"
 #include "hardware/spi.h"
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
@@ -122,35 +123,6 @@ static void write_digit_all(uint8_t *buffer) {
     }
 }
 
-static uint8_t mirror(uint8_t b) {
-    b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
-    b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
-    b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
-    return b;
-}
-
-static void fillDigit0Buffer(uint8_t *buffer) {
-    buffer[0] = mirror(0b01110000);
-    buffer[1] = mirror(0b10001000);
-    buffer[2] = mirror(0b10001000);
-    buffer[3] = mirror(0b10001000);
-    buffer[4] = mirror(0b10001000);
-    buffer[5] = mirror(0b10001000);
-    buffer[6] = mirror(0b10001000);
-    buffer[7] = mirror(0b01110000);
-}
-
-static void fillDigit1Buffer(uint8_t *buffer) {
-    buffer[0] = mirror(0b00010000);
-    buffer[1] = mirror(0b00110000);
-    buffer[2] = mirror(0b01010000);
-    buffer[3] = mirror(0b00010000);
-    buffer[4] = mirror(0b00010000);
-    buffer[5] = mirror(0b00010000);
-    buffer[6] = mirror(0b00010000);
-    buffer[7] = mirror(0b00111000);
-}
-
 static void initSPI() {
     // This example will use SPI0 at 1MHz.
     spi_init(spi_default, 1 * 1000 * 1000);
@@ -187,35 +159,61 @@ void initialize() {
     init7219();
 }
 
-int main() {
+void initDigitCharacterBuffers(uint8_t *digitCharacterBuffer) {
+    for (int i = 0; i < 10; i++) {
+        fillDigitBuffer(i, digitCharacterBuffer + (i * 8));
+    }
+}
 
+void initNonDigitCharacterBuffers(char *nonDigitCharacterBuffer) {
+    for (uint i = 0; i < 58; i++) {
+        fillCharBuffer((char)(i + 65), nonDigitCharacterBuffer + (i * 8));
+    }
+}
+
+int main() {
     initialize();
 
     LEDBlink(2);
 
-    uint32_t displayBuffer[8];
-
-    bool on = true;
-
-    uint8_t digitBuffer[8];
-    fillDigit0Buffer(digitBuffer);
+    uint32_t displayFrameBuffer[8];
+    uint8_t digitCharacterBuffer[80];  // Buffer for dot-matrix encodings of the digits 0-9 (eight bytes per character)
+    char nonDigitCharacterBuffer[58 * 8];
+    initDigitCharacterBuffers(digitCharacterBuffer);
+    initNonDigitCharacterBuffers(nonDigitCharacterBuffer);
+    uint8_t *ptr = digitCharacterBuffer;
 
     while (true) {
-        if (on) {
-            write_register_all(CMD_SCANLINE_0, mirror(0b00000001));
-            write_register_all(CMD_SCANLINE_1, 0);
-            write_register_all(CMD_SCANLINE_2, 0);
-            write_register_all(CMD_SCANLINE_3, 0);
-            write_register_all(CMD_SCANLINE_4, 0);
-            write_register_all(CMD_SCANLINE_5, 0);
-            write_register_all(CMD_SCANLINE_6, 0);
-            write_register_all(CMD_SCANLINE_7, 0);
-        } else {
-            write_digit_all(digitBuffer);
+        for (int i = 0; i < 10; i++) {
+            write_digit_all(digitCharacterBuffer + (i * 8));
+            sleep_ms(500);
         }
 
-        sleep_ms(500);
-
-        on = !on;
+        for (int i = 0; i < 58; i++) {
+            write_digit_all(nonDigitCharacterBuffer + (i * 8));
+            sleep_ms(500);
+        }
     }
+}
+
+static void fillDisplayArrayBuffer(float value, uint8_t *buffer, size_t bufferSize) {
+    if (value > 999) {
+        snprintf(buffer, bufferSize, "%.0f", value);
+        return;
+    }
+
+    if (value > 99) {
+        snprintf(buffer, bufferSize, "%.1f", value);
+        return;
+    }
+
+    if (value > 9) {
+        snprintf(buffer, bufferSize, "%.2f", value);
+        return;
+    }
+
+    snprintf(buffer, bufferSize, "%.3f", value);
+}
+
+static void renderFrameBuffer(uint32_t *frameBuffer, uint8_t negative, uint8_t digit0, uint8_t digit1, uint8_t digit2, uint8_t digit3, uint8_t dpPos) {
 }
