@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "characters.c"
-#include "hardware/spi.h"
+#include "hardware/i2c.h"
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
 
@@ -30,24 +30,6 @@
    for variations.
 
 */
-
-// This defines how many Max7219 modules we have cascaded together, in this case, we have 4 x 8x8 matrices giving a total of 32x8
-#define NUM_MODULES 4
-
-const uint8_t CMD_NOOP = 0;
-const uint8_t CMD_SCANLINE_0 = 1;
-const uint8_t CMD_SCANLINE_1 = 2;
-const uint8_t CMD_SCANLINE_2 = 3;
-const uint8_t CMD_SCANLINE_3 = 4;
-const uint8_t CMD_SCANLINE_4 = 5;
-const uint8_t CMD_SCANLINE_5 = 6;
-const uint8_t CMD_SCANLINE_6 = 7;
-const uint8_t CMD_SCANLINE_7 = 8;
-const uint8_t CMD_DECODEMODE = 9;
-const uint8_t CMD_BRIGHTNESS = 10;
-const uint8_t CMD_SCANLIMIT = 11;
-const uint8_t CMD_SHUTDOWN = 12;
-const uint8_t CMD_DISPLAYTEST = 15;
 
 #ifndef LED_DELAY_MS
 #define LED_DELAY_MS 100
@@ -77,86 +59,22 @@ void LEDBlink(int repeats) {
     }
 }
 
-static inline void cs_select() {
-    asm volatile("nop \n nop \n nop");
-    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 0);  // Active low
-    asm volatile("nop \n nop \n nop");
-}
+void initI2C() {
+    i2c_init(i2c_default, 100 * 1000);
+    gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
+    gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
 
-static inline void cs_deselect() {
-    asm volatile("nop \n nop \n nop");
-    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 1);
-    asm volatile("nop \n nop \n nop");
-}
-
-static void write_register(uint8_t reg, uint8_t data) {
-    uint8_t buf[2];
-    buf[0] = reg;
-    buf[1] = data;
-    cs_select();
-    spi_write_blocking(spi_default, buf, 2);
-    cs_deselect();
-    sleep_ms(1);
-}
-
-static void write_register_all(uint8_t reg, uint8_t data) {
-    uint8_t buf[2];
-    buf[0] = reg;
-    buf[1] = data;
-    cs_select();
-    for (int i = 0; i < NUM_MODULES; i++) {
-        spi_write_blocking(spi_default, buf, 2);
-    }
-    cs_deselect();
-}
-
-static void write_digit_all(uint8_t *buffer) {
-    uint8_t buf[2];
-    for (int i = 0; i < NUM_MODULES; i++) {
-        for (int j = 0; j < 8; j++) {
-            cs_select();
-            buf[0] = CMD_SCANLINE_0 + j;
-            buf[1] = buffer[j];
-            spi_write_blocking(spi_default, buf, 2);
-            cs_deselect();
-        }
-    }
-}
-
-static void initSPI() {
-    // This example will use SPI0 at 1MHz.
-    spi_init(spi_default, 1 * 1000 * 1000);
-    gpio_set_function(PICO_DEFAULT_SPI_SCK_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(PICO_DEFAULT_SPI_TX_PIN, GPIO_FUNC_SPI);
-
-    // Make the SPI pins available to picotool
-    bi_decl(bi_2pins_with_func(PICO_DEFAULT_SPI_TX_PIN, PICO_DEFAULT_SPI_SCK_PIN, GPIO_FUNC_SPI));
-
-    // Chip select is active-low, so we'll initialise it to a driven-high state
-    gpio_init(PICO_DEFAULT_SPI_CSN_PIN);
-    gpio_set_dir(PICO_DEFAULT_SPI_CSN_PIN, GPIO_OUT);
-    gpio_put(PICO_DEFAULT_SPI_CSN_PIN, 1);
-
-    // Make the CS pin available to picotool
-    bi_decl(bi_1pin_with_name(PICO_DEFAULT_SPI_CSN_PIN, "SPI CS"));
-}
-
-static void init7219() {
-    // Send init sequence to device
-    write_register_all(CMD_SHUTDOWN, 0);
-    write_register_all(CMD_DISPLAYTEST, 0);
-    write_register_all(CMD_SCANLIMIT, 7);   // Use all lines
-    write_register_all(CMD_DECODEMODE, 0);  // No BCD decode, just use bit pattern.
-    write_register_all(CMD_BRIGHTNESS, 1);
-    write_register_all(CMD_SHUTDOWN, 1);
+    // Make the I2C pins available to picotool
+    bi_decl(bi_2pins_with_func(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C));
 }
 
 void initialize() {
     stdio_init_all();
     int rc = pico_led_init();
     hard_assert(rc == PICO_OK);
-    initSPI();
-    init7219();
+    initI2C();
 }
 
 void initDigitCharacterBuffers(uint8_t *digitCharacterBuffer) {
@@ -176,21 +94,67 @@ int main() {
 
     LEDBlink(2);
 
-    uint32_t displayFrameBuffer[8];
-    uint8_t digitCharacterBuffer[80];  // Buffer for dot-matrix encodings of the digits 0-9 (eight bytes per character)
-    char nonDigitCharacterBuffer[58 * 8]; // Buffer for dot-matrix encodings of characters A-Z & a-z (eight bytes per character)
-    initDigitCharacterBuffers(digitCharacterBuffer);
-    initNonDigitCharacterBuffers(nonDigitCharacterBuffer);
-    uint8_t *ptr = digitCharacterBuffer;
+    // uint32_t displayFrameBuffer[8];
+    // uint8_t digitCharacterBuffer[80];      // Buffer for dot-matrix encodings of the digits 0-9 (eight bytes per character)
+    // char nonDigitCharacterBuffer[58 * 8];  // Buffer for dot-matrix encodings of characters A-Z & a-z (eight bytes per character)
+    // initDigitCharacterBuffers(digitCharacterBuffer);
+    // initNonDigitCharacterBuffers(nonDigitCharacterBuffer);
+    // uint8_t *ptr = digitCharacterBuffer;
+
+    int deviceAddress = 0x70;
+
+    uint8_t deviceDisplayAddressPointer = 0b00000000;
+    uint8_t deviceClockEnable =   0b00100001;
+    uint8_t deviceRowIntSet =     0b10100000;
+    uint8_t deviceDimmingSet =    0b11101111; // Full brightness
+    uint8_t deviceDisplayOnSet =  0b10000001; // Device ON, blinking OFF.
+    // uint8_t deviceDisplayOffSet = 0b10000000; // Device OFF, blinking OFF.
+
+    uint8_t digit0 = 0b10000000;
+    uint8_t digit1 = 0b00000000;
+    uint8_t digit2 = 0b00000000;
+    uint8_t digit3 = 0b00000000;
+    uint8_t digit4 = 0b00000000;
+
+    uint8_t dataWriteBuffer[17];
+    dataWriteBuffer[0] = deviceDisplayAddressPointer;
+    dataWriteBuffer[1] = digit0;
+    dataWriteBuffer[2] = digit1;
+    dataWriteBuffer[3] = digit2;
+    dataWriteBuffer[4] = digit3;
+    dataWriteBuffer[5] = digit4;
+    dataWriteBuffer[6] = 0;
+    dataWriteBuffer[7] = 0;
+    dataWriteBuffer[8] = 0;
+    dataWriteBuffer[9] = 0;
+    dataWriteBuffer[10] = 0;
+    dataWriteBuffer[11] = 0;
+    dataWriteBuffer[12] = 0;
+    dataWriteBuffer[13] = 0;
+    dataWriteBuffer[14] = 0;
+    dataWriteBuffer[15] = 0;
+    dataWriteBuffer[16] = 0;
+
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceClockEnable, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceRowIntSet, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceDimmingSet, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
+
+    // i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayAddressPointer, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
 
     while (true) {
-        for (int i = 0; i < 10; i++) {
-            write_digit_all(digitCharacterBuffer + (i * 8));
-            sleep_ms(500);
-        }
-
-        for (int i = 0; i < 58; i++) {
-            write_digit_all(nonDigitCharacterBuffer + (i * 8));
+        for (int i = 0; i < 8; i++) {
+            dataWriteBuffer[1] = (uint8_t)(1 << i); // Digit 1
+            dataWriteBuffer[3] = (uint8_t)(1 << i); // Digit 2
+            dataWriteBuffer[5] = 0b00000010; // Colon
+    //  dataWriteBuffer[6] = (uint8_t)(1 << i);
+            dataWriteBuffer[7] = (uint8_t)(1 << i);
+    //         dataWriteBuffer[8] = (uint8_t)(1 << i);
+            dataWriteBuffer[9] = (uint8_t)(1 << i);
+    //         dataWriteBuffer[10] = (uint8_t)(1 << i);
+            i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
             sleep_ms(500);
         }
     }

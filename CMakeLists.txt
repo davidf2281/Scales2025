@@ -45,7 +45,7 @@ pico_enable_stdio_uart(Scales_2025 0)
 pico_enable_stdio_usb(Scales_2025 0)
 
 # Add the standard library to the build
-target_link_libraries(Scales_2025 pico_stdlib hardware_spi)
+target_link_libraries(Scales_2025 pico_stdlib hardware_i2c)
 
 # Add the standard include files to the build
 target_include_directories(Scales_2025 PRIVATE
