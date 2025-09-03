@@ -1,8 +1,3 @@
-/**
- * Copyright (c) 2022 Raspberry Pi (Trading) Ltd.
- *
- * SPDX-License-Identifier: BSD-3-Clause
- */
 
 #include <stdio.h>
 #include <string.h>
@@ -12,28 +7,40 @@
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
 
-/* Example code to talk to a Max7219 driving an 32x8 pixel LED display via SPI
-
-   NOTE: The device is driven at 5v, but SPI communications are at 3v3
-
-   Connections on Raspberry Pi Pico board and a generic Max7219 board, other
-   boards may vary.
-
-   * GPIO 17 (pin 22) Chip select -> CS on Max7219 board
-   * GPIO 18 (pin 24) SCK/spi0_sclk -> CLK on Max7219 board
-   * GPIO 19 (pin 25) MOSI/spi0_tx -> DIN on Max7219 board
-   * 5v (pin 40) -> VCC on Max7219 board
-   * GND (pin 38)  -> GND on Max7219 board
-
-   Note: SPI devices can have a number of different naming schemes for pins. See
-   the Wikipedia page at https://en.wikipedia.org/wiki/Serial_Peripheral_Interface
-   for variations.
-
-*/
-
 #ifndef LED_DELAY_MS
 #define LED_DELAY_MS 100
 #endif
+
+const int deviceAddress = 0x70;
+
+const uint8_t digitPattern0 = 0b00111111;
+const uint8_t digitPattern1 = 0b00000110;
+const uint8_t digitPattern2 = 0b01011011;
+const uint8_t digitPattern3 = 0b01001111;
+const uint8_t digitPattern4 = 0b01100110;
+const uint8_t digitPattern5 = 0b01101101;
+const uint8_t digitPattern6 = 0b01111101;
+const uint8_t digitPattern7 = 0b00000111;
+const uint8_t digitPattern8 = 0b01111111;
+const uint8_t digitPattern9 = 0b01101111;
+const uint8_t digitPatternOff = 0b00000000;
+const uint8_t digitPatternDash = 0b00111111;
+const uint8_t colonPatternOn = 0b00000010;
+const uint8_t colonPatternOff = 0b00000000;
+
+const uint8_t deviceDisplayAddressPointer = 0b00000000;
+const uint8_t deviceClockEnable = 0b00100001;
+const uint8_t deviceRowIntSet = 0b10100000;
+const uint8_t deviceDimmingSet = 0b11101111;    // Full brightness
+const uint8_t deviceDisplayOnSet = 0b10000001;  // Device ON, blinking OFF.
+
+uint8_t dataWriteBuffer[17];
+
+uint8_t *const addrDigit0 = dataWriteBuffer + 1;
+uint8_t *const addrDigit1 = dataWriteBuffer + 3;
+uint8_t *const addrDigit2 = dataWriteBuffer + 7;
+uint8_t *const addrDigit3 = dataWriteBuffer + 9;
+uint8_t *const addrColon = dataWriteBuffer + 5;
 
 int pico_led_init(void) {
     // A device like Pico that uses a GPIO for the LED will define
@@ -77,16 +84,67 @@ void initialize() {
     initI2C();
 }
 
-void initDigitCharacterBuffers(uint8_t *digitCharacterBuffer) {
-    for (int i = 0; i < 10; i++) {
-        fillDigitBuffer(i, digitCharacterBuffer + (i * 8));
+int nthDigit(const int n, const int value) {
+    // Calculate 10^(n-1)
+    int tenthPower = 1;
+    for (int i = 0; i < n - 1; i++) {
+        tenthPower *= 10;
     }
+
+    // Get the nth digit
+    int nth_digit = (value / tenthPower) % 10;
+
+    return nth_digit;
 }
 
-void initNonDigitCharacterBuffers(char *nonDigitCharacterBuffer) {
-    for (uint i = 0; i < 58; i++) {
-        fillCharBuffer((char)(i + 65), nonDigitCharacterBuffer + (i * 8));
+uint8_t patternForDigit(int digit) {
+    switch (digit) {
+        case 0:
+            return digitPattern0;
+            break;
+        case 1:
+            return digitPattern1;
+            break;
+        case 2:
+            return digitPattern2;
+            break;
+        case 3:
+            return digitPattern3;
+            break;
+        case 4:
+            return digitPattern4;
+            break;
+        case 5:
+            return digitPattern5;
+            break;
+        case 6:
+            return digitPattern6;
+            break;
+        case 7:
+            return digitPattern7;
+            break;
+        case 8:
+            return digitPattern8;
+            break;
+        case 9:
+            return digitPattern9;
+            break;
     }
+
+    return 0;
+}
+
+static void writeDataBuffer() {
+    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
+}
+
+static void writeInteger(int value) {
+    *addrDigit0 = patternForDigit(nthDigit(4, value));
+    *addrDigit1 = patternForDigit(nthDigit(3, value));
+    *addrDigit2 = patternForDigit(nthDigit(2, value));
+    *addrDigit3 = patternForDigit(nthDigit(1, value));
+
+    writeDataBuffer();
 }
 
 int main() {
@@ -94,46 +152,7 @@ int main() {
 
     LEDBlink(2);
 
-    // uint32_t displayFrameBuffer[8];
-    // uint8_t digitCharacterBuffer[80];      // Buffer for dot-matrix encodings of the digits 0-9 (eight bytes per character)
-    // char nonDigitCharacterBuffer[58 * 8];  // Buffer for dot-matrix encodings of characters A-Z & a-z (eight bytes per character)
-    // initDigitCharacterBuffers(digitCharacterBuffer);
-    // initNonDigitCharacterBuffers(nonDigitCharacterBuffer);
-    // uint8_t *ptr = digitCharacterBuffer;
-
-    int deviceAddress = 0x70;
-
-    uint8_t deviceDisplayAddressPointer = 0b00000000;
-    uint8_t deviceClockEnable =   0b00100001;
-    uint8_t deviceRowIntSet =     0b10100000;
-    uint8_t deviceDimmingSet =    0b11101111; // Full brightness
-    uint8_t deviceDisplayOnSet =  0b10000001; // Device ON, blinking OFF.
-    // uint8_t deviceDisplayOffSet = 0b10000000; // Device OFF, blinking OFF.
-
-    uint8_t digit0 = 0b10000000;
-    uint8_t digit1 = 0b00000000;
-    uint8_t digit2 = 0b00000000;
-    uint8_t digit3 = 0b00000000;
-    uint8_t digit4 = 0b00000000;
-
-    uint8_t dataWriteBuffer[17];
     dataWriteBuffer[0] = deviceDisplayAddressPointer;
-    dataWriteBuffer[1] = digit0;
-    dataWriteBuffer[2] = digit1;
-    dataWriteBuffer[3] = digit2;
-    dataWriteBuffer[4] = digit3;
-    dataWriteBuffer[5] = digit4;
-    dataWriteBuffer[6] = 0;
-    dataWriteBuffer[7] = 0;
-    dataWriteBuffer[8] = 0;
-    dataWriteBuffer[9] = 0;
-    dataWriteBuffer[10] = 0;
-    dataWriteBuffer[11] = 0;
-    dataWriteBuffer[12] = 0;
-    dataWriteBuffer[13] = 0;
-    dataWriteBuffer[14] = 0;
-    dataWriteBuffer[15] = 0;
-    dataWriteBuffer[16] = 0;
 
     i2c_write_blocking(i2c_default, deviceAddress, &deviceClockEnable, 1, false);
     i2c_write_blocking(i2c_default, deviceAddress, &deviceRowIntSet, 1, false);
@@ -145,39 +164,11 @@ int main() {
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
 
     while (true) {
-        for (int i = 0; i < 8; i++) {
-            dataWriteBuffer[1] = (uint8_t)(1 << i); // Digit 1
-            dataWriteBuffer[3] = (uint8_t)(1 << i); // Digit 2
-            dataWriteBuffer[5] = 0b00000010; // Colon
-    //  dataWriteBuffer[6] = (uint8_t)(1 << i);
-            dataWriteBuffer[7] = (uint8_t)(1 << i);
-    //         dataWriteBuffer[8] = (uint8_t)(1 << i);
-            dataWriteBuffer[9] = (uint8_t)(1 << i);
-    //         dataWriteBuffer[10] = (uint8_t)(1 << i);
-            i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
+        for (int i = 0; i < 10000; i++) {
+            writeInteger(i);
             sleep_ms(500);
         }
     }
 }
-
-static void fillDisplayArrayBuffer(float value, uint8_t *buffer, size_t bufferSize) {
-    if (value > 999) {
-        snprintf(buffer, bufferSize, "%.0f", value);
-        return;
-    }
-
-    if (value > 99) {
-        snprintf(buffer, bufferSize, "%.1f", value);
-        return;
-    }
-
-    if (value > 9) {
-        snprintf(buffer, bufferSize, "%.2f", value);
-        return;
-    }
-
-    snprintf(buffer, bufferSize, "%.3f", value);
-}
-
-static void renderFrameBuffer(uint32_t *frameBuffer, uint8_t negative, uint8_t digit0, uint8_t digit1, uint8_t digit2, uint8_t digit3, uint8_t dpPos) {
-}
+    
+// snprintf(buffer, bufferSize, "%.3f", value);
