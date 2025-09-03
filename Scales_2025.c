@@ -178,7 +178,7 @@ int main() {
 
     uint32_t displayFrameBuffer[8];
     uint8_t digitCharacterBuffer[80];  // Buffer for dot-matrix encodings of the digits 0-9 (eight bytes per character)
-    char nonDigitCharacterBuffer[58 * 8];
+    char nonDigitCharacterBuffer[58 * 8]; // Buffer for dot-matrix encodings of characters A-Z & a-z (eight bytes per character)
     initDigitCharacterBuffers(digitCharacterBuffer);
     initNonDigitCharacterBuffers(nonDigitCharacterBuffer);
     uint8_t *ptr = digitCharacterBuffer;
