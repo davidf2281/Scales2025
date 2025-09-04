@@ -133,7 +133,6 @@ static void clearDecimalPoint() {
 }
 
 static void setDecimalPoint(int position) {
-
     clearDecimalPoint();
 
     switch (position) {
@@ -166,8 +165,17 @@ static void setOverflow() {
     // TODO: Set "----"
 }
 
-static void setDouble(double value) {
+static int castToIntWithRounding(double value) {
+    const int temp = (int)(value * 10);
 
+    if (nthDigit(1, temp) > 4) {
+        return (int)(value) + 1;
+    }
+
+    return (int)value;
+}
+
+static void setDouble(double value) {
     if (value >= 10000) {
         setOverflow();
         return;
@@ -176,16 +184,16 @@ static void setDouble(double value) {
     // TODO: Handle negative values by setting first digit "-" and reducing to three-digit precision
 
     if (value < 10) {
-        setInteger((int)(value * 1000));
+        setInteger(castToIntWithRounding(value * 1000));
         setDecimalPoint(0);
     } else if (value < 100) {
-        setInteger((int)(value * 100));
+        setInteger(castToIntWithRounding(value * 100));
         setDecimalPoint(1);
     } else if (value < 1000) {
-        setInteger((int)(value * 10));
+        setInteger(castToIntWithRounding(value * 10));
         setDecimalPoint(2);
     } else if (value >= 1000) {
-        setInteger((int)(value));
+        setInteger(castToIntWithRounding(value));
         clearDecimalPoint();
     }
 }
@@ -203,36 +211,12 @@ int main() {
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
     i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
-    
+
     while (true) {
-        setDouble(0.001394);
-        writeDataBuffer();
-        sleep_ms(2000);
-
-        setDouble(0.013576);
-        writeDataBuffer();
-        sleep_ms(2000);
-
-        setDouble(0.138495);
-        writeDataBuffer();
-        sleep_ms(2000);
-
-        setDouble(1.876467);
-        writeDataBuffer();
-        sleep_ms(2000);
-
-        setDouble(10.23765);
-        writeDataBuffer();
-        sleep_ms(2000);
-
-        setDouble(134.8678);
-        writeDataBuffer();
-        sleep_ms(2000);
-
-        setDouble(1234.567);
-        writeDataBuffer();
-        sleep_ms(2000);
+        for (double v = 0.0; v < 10000; v += 0.001) {
+            setDouble(v);
+            writeDataBuffer();
+            // sleep_ms(5);
+        }
     }
 }
-
-// snprintf(buffer, bufferSize, "%.3f", value);
