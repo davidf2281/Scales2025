@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "characters.c"
 #include "hardware/i2c.h"
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
@@ -25,6 +24,9 @@ const uint8_t digitPattern8 = 0b01111111;
 const uint8_t digitPattern9 = 0b01101111;
 const uint8_t digitPatternOff = 0b00000000;
 const uint8_t digitPatternDash = 0b00111111;
+const uint8_t digitPatternAllSegmentsOn = 0b11111111;
+const uint8_t digitMaskDecimalPointOn = 0b10000000;
+const uint8_t digitMaskDecimalPointOff = 0b01111111;
 const uint8_t colonPatternOn = 0b00000010;
 const uint8_t colonPatternOff = 0b00000000;
 
@@ -43,17 +45,12 @@ uint8_t *const addrDigit3 = dataWriteBuffer + 9;
 uint8_t *const addrColon = dataWriteBuffer + 5;
 
 int pico_led_init(void) {
-    // A device like Pico that uses a GPIO for the LED will define
-    // PICO_DEFAULT_LED_PIN so we can use normal GPIO functionality to turn the
-    // led on and off
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     return PICO_OK;
 }
 
-// Turn the led on or off
 void pico_set_led(bool led_on) {
-    // Just set the GPIO on or off
     gpio_put(PICO_DEFAULT_LED_PIN, led_on);
 }
 
@@ -77,6 +74,10 @@ void initI2C() {
     bi_decl(bi_2pins_with_func(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C));
 }
 
+static void writeDataBuffer() {
+    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
+}
+
 void initialize() {
     stdio_init_all();
     int rc = pico_led_init();
@@ -84,7 +85,7 @@ void initialize() {
     initI2C();
 }
 
-int nthDigit(const int n, const int value) {
+static int nthDigit(const int n, const int value) {
     // Calculate 10^(n-1)
     int tenthPower = 1;
     for (int i = 0; i < n - 1; i++) {
@@ -97,54 +98,96 @@ int nthDigit(const int n, const int value) {
     return nth_digit;
 }
 
-uint8_t patternForDigit(int digit) {
+static uint8_t patternForDigit(int digit) {
     switch (digit) {
         case 0:
             return digitPattern0;
-            break;
         case 1:
             return digitPattern1;
-            break;
         case 2:
             return digitPattern2;
-            break;
         case 3:
             return digitPattern3;
-            break;
         case 4:
             return digitPattern4;
-            break;
         case 5:
             return digitPattern5;
-            break;
         case 6:
             return digitPattern6;
-            break;
         case 7:
             return digitPattern7;
-            break;
         case 8:
             return digitPattern8;
-            break;
         case 9:
             return digitPattern9;
-            break;
     }
 
-    return 0;
+    return digitPatternDash;
 }
 
-static void writeDataBuffer() {
-    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
+static void clearDecimalPoint() {
+    *addrDigit0 = *addrDigit0 & digitMaskDecimalPointOff;
+    *addrDigit1 = *addrDigit1 & digitMaskDecimalPointOff;
+    *addrDigit2 = *addrDigit2 & digitMaskDecimalPointOff;
+    *addrDigit3 = *addrDigit3 & digitMaskDecimalPointOff;
 }
 
-static void writeInteger(int value) {
+static void setDecimalPoint(int position) {
+
+    clearDecimalPoint();
+
+    switch (position) {
+        case 0:
+            *addrDigit0 = *addrDigit0 | digitMaskDecimalPointOn;
+            return;
+
+        case 1:
+            *addrDigit1 = *addrDigit1 | digitMaskDecimalPointOn;
+            return;
+
+        case 2:
+            *addrDigit2 = *addrDigit2 | digitMaskDecimalPointOn;
+            return;
+
+        case 3:
+            *addrDigit3 = *addrDigit3 | digitMaskDecimalPointOn;
+            return;
+    }
+}
+
+static void setInteger(int value) {
     *addrDigit0 = patternForDigit(nthDigit(4, value));
     *addrDigit1 = patternForDigit(nthDigit(3, value));
     *addrDigit2 = patternForDigit(nthDigit(2, value));
     *addrDigit3 = patternForDigit(nthDigit(1, value));
+}
 
-    writeDataBuffer();
+static void setOverflow() {
+    // TODO: Set "----"
+}
+
+static void setDouble(double value) {
+
+    if (value >= 10000) {
+        setOverflow();
+        return;
+    }
+
+    // TODO: Handle negative values by setting first digit "-" and reducing to three-digit precision
+
+    if (value < 10) {
+        setInteger((int)(value * 1000));
+        setDecimalPoint(0);
+    } else if (value < 100) {
+        setInteger((int)(value * 100));
+        setDecimalPoint(1);
+    } else if (value < 1000) {
+        setInteger((int)(value * 10));
+        setDecimalPoint(2);
+    } else if (value >= 1000) {
+        setInteger((int)(value));
+        clearDecimalPoint();
+    }
 }
 
 int main() {
@@ -158,17 +201,38 @@ int main() {
     i2c_write_blocking(i2c_default, deviceAddress, &deviceRowIntSet, 1, false);
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDimmingSet, 1, false);
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
-
-    // i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayAddressPointer, 1, false);
     i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
-
+    
     while (true) {
-        for (int i = 0; i < 10000; i++) {
-            writeInteger(i);
-            sleep_ms(500);
-        }
+        setDouble(0.001394);
+        writeDataBuffer();
+        sleep_ms(2000);
+
+        setDouble(0.013576);
+        writeDataBuffer();
+        sleep_ms(2000);
+
+        setDouble(0.138495);
+        writeDataBuffer();
+        sleep_ms(2000);
+
+        setDouble(1.876467);
+        writeDataBuffer();
+        sleep_ms(2000);
+
+        setDouble(10.23765);
+        writeDataBuffer();
+        sleep_ms(2000);
+
+        setDouble(134.8678);
+        writeDataBuffer();
+        sleep_ms(2000);
+
+        setDouble(1234.567);
+        writeDataBuffer();
+        sleep_ms(2000);
     }
 }
-    
+
 // snprintf(buffer, bufferSize, "%.3f", value);
