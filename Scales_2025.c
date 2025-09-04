@@ -23,7 +23,7 @@ const uint8_t digitPattern7 = 0b00000111;
 const uint8_t digitPattern8 = 0b01111111;
 const uint8_t digitPattern9 = 0b01101111;
 const uint8_t digitPatternOff = 0b00000000;
-const uint8_t digitPatternDash = 0b00111111;
+const uint8_t digitPatternDash = 0b01000000;
 const uint8_t digitPatternAllSegmentsOn = 0b11111111;
 const uint8_t digitMaskDecimalPointOn = 0b10000000;
 const uint8_t digitMaskDecimalPointOff = 0b01111111;
@@ -64,7 +64,7 @@ void LEDBlink(int repeats) {
 }
 
 void initI2C() {
-    i2c_init(i2c_default, 100 * 1000);
+    i2c_init(i2c_default, 1000 * 1000);
     gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
@@ -85,6 +85,9 @@ void initialize() {
     initI2C();
 }
 
+// Retrieves nth digit starting from the right and moving left, eg:
+// nthDigit(1, 5678) will return 8.
+// nthDigit(4, 5678) will return 5.
 static int nthDigit(const int n, const int value) {
     // Calculate 10^(n-1)
     int tenthPower = 1;
@@ -162,10 +165,13 @@ static void setInteger(int value) {
 }
 
 static void setOverflow() {
-    // TODO: Set "----"
+    *addrDigit0 = digitPatternDash;
+    *addrDigit1 = digitPatternDash;
+    *addrDigit2 = digitPatternDash;
+    *addrDigit3 = digitPatternDash;
 }
 
-static int castToIntWithRounding(double value) {
+static int truncateToIntWithRounding(double value) {
     const int temp = (int)(value * 10);
 
     if (nthDigit(1, temp) > 4) {
@@ -184,16 +190,16 @@ static void setDouble(double value) {
     // TODO: Handle negative values by setting first digit "-" and reducing to three-digit precision
 
     if (value < 10) {
-        setInteger(castToIntWithRounding(value * 1000));
+        setInteger(truncateToIntWithRounding(value * 1000));
         setDecimalPoint(0);
     } else if (value < 100) {
-        setInteger(castToIntWithRounding(value * 100));
+        setInteger(truncateToIntWithRounding(value * 100));
         setDecimalPoint(1);
     } else if (value < 1000) {
-        setInteger(castToIntWithRounding(value * 10));
+        setInteger(truncateToIntWithRounding(value * 10));
         setDecimalPoint(2);
     } else if (value >= 1000) {
-        setInteger(castToIntWithRounding(value));
+        setInteger(truncateToIntWithRounding(value));
         clearDecimalPoint();
     }
 }
@@ -211,6 +217,10 @@ int main() {
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
     i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
     i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
+
+    setOverflow();
+    writeDataBuffer();
+    sleep_ms(2000);
 
     while (true) {
         for (double v = 0.0; v < 10000; v += 0.001) {
