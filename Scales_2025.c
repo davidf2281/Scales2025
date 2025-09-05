@@ -1,6 +1,8 @@
 #include <stdio.h>
 
+#include "hardware/gpio.h"
 #include "hardware/i2c.h"
+#include "hardware/sync.h"
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
 
@@ -38,6 +40,9 @@ uint8_t *const addrDigit2 = dataWriteBuffer + 7;
 uint8_t *const addrDigit3 = dataWriteBuffer + 9;
 uint8_t *const addrColon = dataWriteBuffer + 5;
 
+const uint CLOCK_PIN = 14;
+const uint DATA_PIN = 15;
+
 static int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
@@ -68,14 +73,57 @@ static void initI2C() {
     bi_decl(bi_2pins_with_func(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C));
 }
 
+static void initGPIO() {
+    gpio_init(CLOCK_PIN);
+    gpio_set_dir(CLOCK_PIN, GPIO_OUT);
+    gpio_put(CLOCK_PIN, 0);
+
+    gpio_init(DATA_PIN);
+    gpio_set_dir(DATA_PIN, GPIO_IN);
+}
+
 static void writeDataBuffer() {
     i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
+}
+
+static int32_t readHX711() {
+    int32_t value = 0;
+
+    // HX711 is fussy about readings happening within its time window so we disable interrupts.
+    const uint32_t interruptState = save_and_disable_interrupts();
+
+    // Wait for reading to be ready
+    while (gpio_get(DATA_PIN));  // Data pin is high to indicate not ready; low to indicate ready.
+
+    // Shift in our 24-bit reading:
+    for(int i = 0; i < 24; i++) {
+        gpio_put(CLOCK_PIN, 1);
+        sleep_us(1);
+        value |= gpio_get(DATA_PIN) << i;
+        gpio_put(CLOCK_PIN, 0);
+        sleep_us(1);
+    }
+
+    // Pulse the clock pin 1-3 times to set gain and channel for next reading:
+    // 1 pulse:  Input channel A with gain of 128
+    // 2 pulses: Input channel B with gain of 32
+    // 3 pulses: Input channel A with gain of 64
+
+    gpio_put(CLOCK_PIN, 1);
+    sleep_us(1);
+    gpio_put(CLOCK_PIN, 0);
+
+    // Restore interrupts passing in our saved state
+    restore_interrupts_from_disabled(interruptState);
+
+    return value;
 }
 
 static void initialize() {
     stdio_init_all();
     int rc = pico_led_init();
     hard_assert(rc == PICO_OK);
+    initGPIO();
     initI2C();
 }
 
@@ -214,13 +262,21 @@ int main() {
 
     setOverflow();
     writeDataBuffer();
-    sleep_ms(2000);
+    sleep_ms(10000);
+
+    int32_t reading = 123;
 
     while (true) {
-        for (double v = 0.0; v < 10000; v += 0.001) {
-            setDouble(v);
-            writeDataBuffer();
-            // sleep_ms(5);
-        }
+
+        printf("Reading: %ld\n", reading);
+
+        reading = readHX711();
+
+        sleep_ms(1000);
+        // for (double v = 0.0; v < 10000; v += 0.001) {
+        //     setDouble(v);
+        //     writeDataBuffer();
+        //     // sleep_ms(5);
+        // }
     }
 }

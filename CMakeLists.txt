@@ -42,10 +42,10 @@ pico_set_program_version(Scales_2025 "0.1")
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(Scales_2025 0)
-pico_enable_stdio_usb(Scales_2025 0)
+pico_enable_stdio_usb(Scales_2025 1)
 
 # Add the standard library to the build
-target_link_libraries(Scales_2025 pico_stdlib hardware_i2c)
+target_link_libraries(Scales_2025 pico_stdlib hardware_i2c hardware_sync)
 
 # Add the standard include files to the build
 target_include_directories(Scales_2025 PRIVATE
