@@ -1,14 +1,8 @@
-
 #include <stdio.h>
-#include <string.h>
 
 #include "hardware/i2c.h"
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
-
-#ifndef LED_DELAY_MS
-#define LED_DELAY_MS 100
-#endif
 
 const int deviceAddress = 0x70;
 
@@ -44,26 +38,26 @@ uint8_t *const addrDigit2 = dataWriteBuffer + 7;
 uint8_t *const addrDigit3 = dataWriteBuffer + 9;
 uint8_t *const addrColon = dataWriteBuffer + 5;
 
-int pico_led_init(void) {
+static int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     return PICO_OK;
 }
 
-void pico_set_led(bool led_on) {
+static void pico_set_led(bool led_on) {
     gpio_put(PICO_DEFAULT_LED_PIN, led_on);
 }
 
-void LEDBlink(int repeats) {
+static void LEDBlink(int repeats) {
     for (int i = 0; i < repeats; i++) {
         pico_set_led(true);
-        sleep_ms(LED_DELAY_MS);
+        sleep_ms(100);
         pico_set_led(false);
-        sleep_ms(LED_DELAY_MS);
+        sleep_ms(100);
     }
 }
 
-void initI2C() {
+static void initI2C() {
     i2c_init(i2c_default, 1000 * 1000);
     gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
@@ -78,7 +72,7 @@ static void writeDataBuffer() {
     i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
 }
 
-void initialize() {
+static void initialize() {
     stdio_init_all();
     int rc = pico_led_init();
     hard_assert(rc == PICO_OK);
