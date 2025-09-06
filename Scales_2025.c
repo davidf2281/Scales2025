@@ -87,7 +87,8 @@ static void writeDataBuffer() {
 }
 
 static int32_t readHX711() {
-    int32_t value = 0;
+    uint8_t data[3] = {0};
+    uint8_t filler = 0x00;
 
     // HX711 is fussy about readings happening within its time window so we disable interrupts.
     const uint32_t interruptState = save_and_disable_interrupts();
@@ -96,12 +97,14 @@ static int32_t readHX711() {
     while (gpio_get(DATA_PIN));  // Data pin is high to indicate not ready; low to indicate ready.
 
     // Shift in our 24-bit reading:
-    for(int i = 0; i < 24; i++) {
-        gpio_put(CLOCK_PIN, 1);
-        sleep_us(1);
-        value |= gpio_get(DATA_PIN) << i;
-        gpio_put(CLOCK_PIN, 0);
-        sleep_us(1);
+    for (int j = 3; j >= 0; j--) {
+        for (int i = 0; i < 8; i++) {
+            gpio_put(CLOCK_PIN, 1);
+            sleep_us(1);
+            data[j] |= gpio_get(DATA_PIN) << (7 - i);
+            gpio_put(CLOCK_PIN, 0);
+            sleep_us(1);
+        }
     }
 
     // Pulse the clock pin 1-3 times to set gain and channel for next reading:
@@ -109,14 +112,34 @@ static int32_t readHX711() {
     // 2 pulses: Input channel B with gain of 32
     // 3 pulses: Input channel A with gain of 64
 
-    gpio_put(CLOCK_PIN, 1);
-    sleep_us(1);
-    gpio_put(CLOCK_PIN, 0);
+    for (int i = 0; i < 2; i++) {
+        gpio_put(CLOCK_PIN, 1);
+        sleep_us(1);
+        gpio_put(CLOCK_PIN, 0);
+    }
 
     // Restore interrupts passing in our saved state
     restore_interrupts_from_disabled(interruptState);
 
+    // Replicate the most significant bit to pad out a 32-bit signed integer
+    if (data[2] & 0x80) {
+        filler = 0xFF;
+    } else {
+        filler = 0x00;
+    }
+
+    // Construct a 32-bit signed integer
+    int32_t value = ((uint32_t)(filler) << 24 | (uint32_t)(data[2]) << 16 | (uint32_t)(data[1]) << 8 | (uint32_t)(data[0]));
+
     return value;
+}
+
+int32_t averageHX711() {
+    int64_t tally = 0;
+    for (int i = 0; i < 16; i++) {
+        tally += readHX711();
+    }
+    return (int32_t)(tally / 16);
 }
 
 static void initialize() {
@@ -262,21 +285,13 @@ int main() {
 
     setOverflow();
     writeDataBuffer();
-    sleep_ms(10000);
 
-    int32_t reading = 123;
+    int32_t calibration = averageHX711();
 
     while (true) {
-
+        int32_t reading = averageHX711();
+        setDouble((double)(reading - calibration) / 50000);
+        writeDataBuffer();
         printf("Reading: %ld\n", reading);
-
-        reading = readHX711();
-
-        sleep_ms(1000);
-        // for (double v = 0.0; v < 10000; v += 0.001) {
-        //     setDouble(v);
-        //     writeDataBuffer();
-        //     // sleep_ms(5);
-        // }
     }
 }
