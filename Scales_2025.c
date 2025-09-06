@@ -86,25 +86,27 @@ static void writeDataBuffer() {
     i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
 }
 
-static int32_t readHX711() {
-    uint8_t data[3] = {0};
-    uint8_t filler = 0x00;
-
-    // HX711 is fussy about readings happening within its time window so we disable interrupts.
-    const uint32_t interruptState = save_and_disable_interrupts();
+static uint32_t readHX711() {
+    uint32_t reading = 0;
 
     // Wait for reading to be ready
     while (gpio_get(DATA_PIN));  // Data pin is high to indicate not ready; low to indicate ready.
 
+    // HX711 goes into standby if the clock stays high for more
+    // than 60uS, so disable interrupts to make sure the CPU
+    // doesn't go off and service one mid-reading.
+    const uint32_t interruptState = save_and_disable_interrupts();
+
     // Shift in our 24-bit reading:
-    for (int j = 3; j >= 0; j--) {
-        for (int i = 0; i < 8; i++) {
-            gpio_put(CLOCK_PIN, 1);
-            sleep_us(1);
-            data[j] |= gpio_get(DATA_PIN) << (7 - i);
-            gpio_put(CLOCK_PIN, 0);
-            sleep_us(1);
-        }
+    for (int i = 0; i < 24; i++) {
+        gpio_put(CLOCK_PIN, 1);
+        sleep_us(1);
+        reading = reading << 1;
+        if (gpio_get(DATA_PIN) == 1) {
+            reading++;
+        }  // TODO: Get rid of the conditional
+        gpio_put(CLOCK_PIN, 0);
+        sleep_us(1);
     }
 
     // Pulse the clock pin 1-3 times to set gain and channel for next reading:
@@ -112,7 +114,7 @@ static int32_t readHX711() {
     // 2 pulses: Input channel B with gain of 32
     // 3 pulses: Input channel A with gain of 64
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 1; i++) {
         gpio_put(CLOCK_PIN, 1);
         sleep_us(1);
         gpio_put(CLOCK_PIN, 0);
@@ -121,25 +123,32 @@ static int32_t readHX711() {
     // Restore interrupts passing in our saved state
     restore_interrupts_from_disabled(interruptState);
 
-    // Replicate the most significant bit to pad out a 32-bit signed integer
-    if (data[2] & 0x80) {
-        filler = 0xFF;
-    } else {
-        filler = 0x00;
-    }
+    // Convert the signed two's complement output from the HX711 to unsigned:
+    reading = reading ^ 0x800000;
 
-    // Construct a 32-bit signed integer
-    int32_t value = ((uint32_t)(filler) << 24 | (uint32_t)(data[2]) << 16 | (uint32_t)(data[1]) << 8 | (uint32_t)(data[0]));
-
-    return value;
+    return reading;
 }
 
-int32_t averageHX711() {
-    int64_t tally = 0;
-    for (int i = 0; i < 16; i++) {
+static void resetHX711() {
+    // Taking the clock pin high for more than 60uS and
+    // then taking it low resets the HX711.
+    gpio_put(CLOCK_PIN, 1);
+    sleep_us(100);
+    gpio_put(CLOCK_PIN, 0);
+
+    // Datasheet says the settling time after reset is 400ms
+    sleep_ms(500);
+
+    // Take a single reading to set the channel & gain
+    readHX711();
+}
+
+uint32_t averageHX711(uint8_t samples) {
+    uint32_t tally = 0;
+    for (int i = 0; i < samples; i++) {
         tally += readHX711();
     }
-    return (int32_t)(tally / 16);
+    return tally / samples;
 }
 
 static void initialize() {
@@ -286,12 +295,16 @@ int main() {
     setOverflow();
     writeDataBuffer();
 
-    int32_t calibration = averageHX711();
+    resetHX711();
+    averageHX711(64);
+    uint32_t calibration = averageHX711(64);
 
     while (true) {
-        int32_t reading = averageHX711();
-        setDouble((double)(reading - calibration) / 50000);
+        uint32_t reading = averageHX711(64);
+        double display = (double)((reading - calibration));
+        setDouble(display);
         writeDataBuffer();
-        printf("Reading: %ld\n", reading);
+        printf("Reading: %lu\n", reading);
+        printf("Display: %f\n\n", display);
     }
 }
