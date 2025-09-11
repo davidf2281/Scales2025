@@ -82,6 +82,26 @@ static void initGPIO() {
     gpio_set_dir(DATA_PIN, GPIO_IN);
 }
 
+static void initDisplay() {
+    dataWriteBuffer[0] = deviceDisplayAddressPointer;
+
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceClockEnable, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceRowIntSet, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceDimmingSet, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
+    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
+    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
+}
+
+static void initialize() {
+    stdio_init_all();
+    int rc = pico_led_init();
+    hard_assert(rc == PICO_OK);
+    initGPIO();
+    initI2C();
+    initDisplay();
+}
+
 static void writeDataBuffer() {
     i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
 }
@@ -101,10 +121,8 @@ static uint32_t readHX711() {
     for (int i = 0; i < 24; i++) {
         gpio_put(CLOCK_PIN, 1);
         sleep_us(1);
+        reading += gpio_get(DATA_PIN);
         reading = reading << 1;
-        if (gpio_get(DATA_PIN) == 1) {
-            reading++;
-        }  // TODO: Get rid of the conditional
         gpio_put(CLOCK_PIN, 0);
         sleep_us(1);
     }
@@ -149,14 +167,6 @@ uint32_t averageHX711(uint8_t samples) {
         tally += readHX711();
     }
     return tally / samples;
-}
-
-static void initialize() {
-    stdio_init_all();
-    int rc = pico_led_init();
-    hard_assert(rc == PICO_OK);
-    initGPIO();
-    initI2C();
 }
 
 // Retrieves nth digit starting from the right and moving left, eg:
@@ -282,15 +292,6 @@ int main() {
     initialize();
 
     LEDBlink(2);
-
-    dataWriteBuffer[0] = deviceDisplayAddressPointer;
-
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceClockEnable, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceRowIntSet, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceDimmingSet, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
 
     setOverflow();
     writeDataBuffer();
