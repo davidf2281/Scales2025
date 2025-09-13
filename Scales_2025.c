@@ -6,8 +6,24 @@
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
 
-const int deviceAddress = 0x70;
+const int displayI2CAddress = 0x70;
+const int ADCI2CAddress = 0x2A;
 
+// ADC constants
+const uint8_t R0x00_address = 0x00;
+const uint8_t R0x01_address = 0x01;
+const uint8_t R0x1C_address = 0x1C;
+const uint8_t R0x12_address = 0x12;          // Start address of three-byte ADC reading
+const uint8_t R0x00_RR_Bit = 0b00000001;     // Register reset. 1 = Register Reset, reset all register except RR. 0 = Normal Operation (default). RR is a level trigger reset control. RR=1, enter reset state, RR=0, leave reset state back to normal state.
+const uint8_t R0x00_PUD_Bit = 0b00000010;    // Power up digital circuit. 1 = Power up the chip digital logic, 0 = power down (default)
+const uint8_t R0x00_PUA_Bit = 0b00000100;    // Power up analog circuit. 1 = Power up the chip analog circuits (PUD must be 1). 0 = Power down (default)
+const uint8_t R0x00_PUR_Bit = 0b00001000;    // Power up ready (Read Only Status). 1 = Power Up ready, 0 = Power down, not ready
+const uint8_t R0x00_CS_Bit = 0b00010000;     // Cycle start. Synchronize conversion to the rising edge of this registe
+const uint8_t R0x00_CR_Bit = 0b00100000;     // Cycle ready (Read only Status). 1 = ADC DATA is ready
+const uint8_t R0x00_OSCS_Bit = 0b01000000;   // System clock source select. 1 = External Crystal, 0 = Internal RC oscillator (default)
+const uint8_t R0x00_AVDDS_Bit = 0b10000000;  // AVDD source select. 1 = Internal LDO, 0 = AVDD pin input (default)
+
+// Display constants
 const uint8_t digitPattern0 = 0b00111111;
 const uint8_t digitPattern1 = 0b00000110;
 const uint8_t digitPattern2 = 0b01011011;
@@ -25,7 +41,6 @@ const uint8_t digitMaskDecimalPointOn = 0b10000000;
 const uint8_t digitMaskDecimalPointOff = 0b01111111;
 const uint8_t colonPatternOn = 0b00000010;
 const uint8_t colonPatternOff = 0b00000000;
-
 const uint8_t deviceDisplayAddressPointer = 0b00000000;
 const uint8_t deviceClockEnable = 0b00100001;
 const uint8_t deviceRowIntSet = 0b10100000;
@@ -63,7 +78,7 @@ static void LEDBlink(int repeats) {
 }
 
 static void initI2C() {
-    i2c_init(i2c_default, 1000 * 1000);
+    i2c_init(i2c_default, 100000);
     gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
@@ -85,88 +100,125 @@ static void initGPIO() {
 static void initDisplay() {
     dataWriteBuffer[0] = deviceDisplayAddressPointer;
 
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceClockEnable, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceRowIntSet, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceDimmingSet, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
-    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
-    i2c_write_blocking(i2c_default, deviceAddress, &deviceDisplayOnSet, 1, false);
+    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceClockEnable, 1, false);
+    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceRowIntSet, 1, false);
+    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDimmingSet, 1, false);
+    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
+    i2c_write_blocking(i2c_default, displayI2CAddress, dataWriteBuffer, 17, false);
+    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
 }
 
-static void initialize() {
+static void initADC() {
+    uint8_t writeBuffer[2];
+
+    // 1. Set the RR bit to 1 in R0x00, to guarantee a reset of all register values.
+    writeBuffer[0] = R0x00_address;
+    writeBuffer[1] = 0b00000000 | R0x00_RR_Bit;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // 2. Set the RR bit to 0 and PUD bit 1, in R0x00, to enter normal operation
+    writeBuffer[0] = R0x00_address;
+    writeBuffer[1] = (R0x00_RR_Bit & 0b00000000) | R0x00_PUD_Bit;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // 3. After about 200 microseconds, the PWRUP bit will be Logic 1,
+    // indicating the device is ready for the remaining programming setup.
+    sleep_us(250);
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+    uint8_t dataReadByte;
+    i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
+    while (!(dataReadByte & R0x00_PUR_Bit)) {
+        i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+        dataReadByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
+    }
+
+    // Write register R0x00 configuration:
+    uint8_t configuration = 0xAE;  // Internal LDO selected; internal oscillator; power up analog and digital circuits.
+    writeBuffer[0] = R0x00_address;
+    writeBuffer[1] = configuration;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // Enable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed):
+    static const uint8_t R0x1C_PGA_CAP_EN_Bit = 0b10000000;
+    writeBuffer[0] = R0x1C_address;
+    writeBuffer[1] = 0b00000000 | R0x1C_PGA_CAP_EN_Bit;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    /*
+        Set device LDO output voltage and analogue input gain:
+            Bits 5 to 3 of register 0x01 select LDO voltage. 100 == 3.3V
+            Bits 2 to 0 of register 0x01 select device gain. 111 == 128x
+    */
+    const uint8_t LDOVoltageMask = 0b00100000;
+    const uint8_t gainSelectMask = 0b00000111;
+    writeBuffer[0] = R0x01_address;
+    writeBuffer[1] = LDOVoltageMask | gainSelectMask;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // 5. No conversion will take place until the R0x00 bit 4 “CS” is set Logic = 1
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+    uint8_t current0x0;
+    i2c_read_blocking(i2c_default, ADCI2CAddress, &current0x0, 1, false);
+    writeBuffer[0] = R0x00_address;
+    const uint8_t conversionCycleStartMask = 0b00010000;
+    writeBuffer[1] = current0x0 | conversionCycleStartMask;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+}
+
+static uint32_t readADC() {
+
+     // 5. No conversion will take place until the R0x00 bit 4 “CS” is set Logic = 1
+     // TODO: Try removing this when we've sussed out why averageADC() isn't working
+    uint8_t writeBuffer[2];
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+    uint8_t current0x0;
+    i2c_read_blocking(i2c_default, ADCI2CAddress, &current0x0, 1, false);
+    writeBuffer[0] = R0x00_address;
+    const uint8_t conversionCycleStartMask = 0b00010000;
+    writeBuffer[1] = current0x0 | conversionCycleStartMask;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // Wait until Conversion-ready flag is high
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+    uint8_t dataReadByte;
+    i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
+    while (!(dataReadByte & R0x00_CR_Bit)) {
+        LEDBlink(1);
+        i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+        dataReadByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
+    }
+
+    // Read three ADC bytes
+    uint8_t reading[3];
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x12_address, 1, false);
+    i2c_read_blocking(i2c_default, ADCI2CAddress, reading, 3, false);
+
+    uint32_t result = ((uint32_t)reading[0] << 16) | ((uint32_t)reading[1] << 8) | (uint32_t)reading[2];
+
+    return result;
+}
+
+uint32_t averageADC(uint8_t samples) {
+    uint32_t tally = 0;
+    for (int i = 0; i < samples; i++) {
+        tally += readADC();
+        sleep_ms(100);
+    }
+    return tally / samples;
+}
+
+static bool initialize() {
     stdio_init_all();
     int rc = pico_led_init();
     hard_assert(rc == PICO_OK);
     initGPIO();
     initI2C();
     initDisplay();
+    initADC();
 }
 
 static void writeDataBuffer() {
-    i2c_write_blocking(i2c_default, deviceAddress, dataWriteBuffer, 17, false);
-}
-
-static uint32_t readHX711() {
-    uint32_t reading = 0;
-
-    // Wait for reading to be ready
-    while (gpio_get(DATA_PIN));  // Data pin is high to indicate not ready; low to indicate ready.
-
-    // HX711 goes into standby if the clock stays high for more
-    // than 60uS, so disable interrupts to make sure the CPU
-    // doesn't go off and service one mid-reading.
-    const uint32_t interruptState = save_and_disable_interrupts();
-
-    // Shift in our 24-bit reading:
-    for (int i = 0; i < 24; i++) {
-        gpio_put(CLOCK_PIN, 1);
-        sleep_us(1);
-        reading += gpio_get(DATA_PIN);
-        reading = reading << 1;
-        gpio_put(CLOCK_PIN, 0);
-        sleep_us(1);
-    }
-
-    // Pulse the clock pin 1-3 times to set gain and channel for next reading:
-    // 1 pulse:  Input channel A with gain of 128
-    // 2 pulses: Input channel B with gain of 32
-    // 3 pulses: Input channel A with gain of 64
-
-    for (int i = 0; i < 1; i++) {
-        gpio_put(CLOCK_PIN, 1);
-        sleep_us(1);
-        gpio_put(CLOCK_PIN, 0);
-    }
-
-    // Restore interrupts passing in our saved state
-    restore_interrupts_from_disabled(interruptState);
-
-    // Convert the signed two's complement output from the HX711 to unsigned:
-    reading = reading ^ 0x800000;
-
-    return reading;
-}
-
-static void resetHX711() {
-    // Taking the clock pin high for more than 60uS and
-    // then taking it low resets the HX711.
-    gpio_put(CLOCK_PIN, 1);
-    sleep_us(100);
-    gpio_put(CLOCK_PIN, 0);
-
-    // Datasheet says the settling time after reset is 400ms
-    sleep_ms(500);
-
-    // Take a single reading to set the channel & gain
-    readHX711();
-}
-
-uint32_t averageHX711(uint8_t samples) {
-    uint32_t tally = 0;
-    for (int i = 0; i < samples; i++) {
-        tally += readHX711();
-    }
-    return tally / samples;
+    i2c_write_blocking(i2c_default, displayI2CAddress, dataWriteBuffer, 17, false);
 }
 
 // Retrieves nth digit starting from the right and moving left, eg:
@@ -296,13 +348,14 @@ int main() {
     setOverflow();
     writeDataBuffer();
 
-    resetHX711();
-    averageHX711(64);
-    uint32_t calibration = averageHX711(64);
+    sleep_ms(3000);
+    printf("Starting.\n");
+ 
+    uint32_t calibration = averageADC(4);
 
     while (true) {
-        uint32_t reading = averageHX711(64);
-        double display = (double)((reading - calibration));
+        uint32_t reading = averageADC(4);
+        double display = (double)((reading - calibration) / 1000);
         setDouble(display);
         writeDataBuffer();
         printf("Reading: %lu\n", reading);
