@@ -7,6 +7,8 @@
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
 
+#define ADC_DELAY 12500
+
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
 
@@ -14,6 +16,7 @@ const int ADCI2CAddress = 0x2A;
 const uint8_t R0x00_address = 0x00;
 const uint8_t R0x01_address = 0x01;
 const uint8_t R0x02_address = 0x02;
+const uint8_t R0x11_address = 0x11;          // I2C control
 const uint8_t R0x1C_address = 0x1C;
 const uint8_t R0x12_address = 0x12;          // Start address of three-byte ADC reading
 const uint8_t R0x15_address = 0x15;          // ADC control register
@@ -28,6 +31,9 @@ const uint8_t R0x00_OSCS_Bit = 0b01000000;   // System clock source select. 1 = 
 const uint8_t R0x00_AVDDS_Bit = 0b10000000;  // AVDD source select. 1 = Internal LDO, 0 = AVDD pin input (default)
 const uint8_t R0x02_CALS_Bit = 0b00000100;
 const uint8_t R0x02_CAL_ERR_Bit = 0b00001000;
+
+const uint8_t R0x11_TS_Bit = 0b00000010;
+
 
 const uint8_t R0x1B_PGACHPDIS_Bit = 0b00000001;      // Chopper disable bit. 1 = disabled
 const uint8_t R0x1B_PGA_BUFFER_ENABLE = 0b00100000;  // Enable PGA output buffer
@@ -137,13 +143,20 @@ static void readADCI2CBytes(uint8_t registerAddress, uint8_t *buffer, uint8_t le
     i2c_read_blocking(i2c_default, ADCI2CAddress, buffer, length, false);
 }
 
+static void setADCI2Cbit(uint8_t regAddress, uint8_t byteMask, bool value) {
+    uint8_t currentRegValue = readADCI2CByte(regAddress);
+    uint8_t bitZeroedRegvalue = currentRegValue ^ byteMask;
+    uint8_t bitSetRegValue = bitZeroedRegvalue | (value ? byteMask : 0);
+    writeADCI2CByte(regAddress, bitSetRegValue);
+}
+
 // Returns true if calibration successful; false otherwise
 static bool calibrateADC() {
     uint8_t writeBuffer[2];
 
     // Kick off device internal calibration
     writeADCI2CByte(R0x02_address, R0x02_CALS_Bit);
-    LEDBlink(1);
+
     // Wait for calibration and check it's complete
     sleep_ms(500);
     bool done = false;
@@ -151,7 +164,7 @@ static bool calibrateADC() {
         done = (readADCI2CByte(R0x02_address) & R0x02_CALS_Bit) == 0;
         sleep_us(200);
     }
-    LEDBlink(1);
+
     // Get the calibration error flag:
     uint8_t calibrationResultByte = readADCI2CByte(R0x02_address);
     bool success = ((calibrationResultByte & R0x02_CAL_ERR_Bit) == 0);
@@ -173,6 +186,13 @@ static int32_t readADC() {
     // uint32_t result = ((uint32_t)reading[0] << 16) | ((uint32_t)reading[1] << 8) | (uint32_t)reading[2];
 
     return value;
+}
+
+static void flushADC() {
+    for (int i = 0; i < 10; i++) {
+        readADC();
+        sleep_us(ADC_DELAY);
+    }
 }
 
 static void initADC() {
@@ -202,7 +222,7 @@ static void initADC() {
             Bits 5 to 3 of register 0x01 select LDO voltage. 100 == 3.3V
             Bits 2 to 0 of register 0x01 select device gain. 111 == 128x
     */
-    const uint8_t LDOVoltageMask = 0b00010000;
+    const uint8_t LDOVoltageMask = 0b00100000;
     const uint8_t gainSelectMask = 0b00000111;
     writeADCI2CByte(R0x01_address, LDOVoltageMask | gainSelectMask);
 
@@ -232,8 +252,6 @@ static void initADC() {
     }
 }
 
-#define ADC_DELAY 12500
-
 int32_t averageADC(uint8_t samples) {
     int32_t tally = 0;
     for (int i = 0; i < samples; i++) {
@@ -241,6 +259,59 @@ int32_t averageADC(uint8_t samples) {
         sleep_us(ADC_DELAY);
     }
     return tally / samples;
+}
+
+
+static int32_t readTemperatureSensor() {
+
+    sleep_us(ADC_DELAY);
+
+    // Record current Reg0x01 state
+    uint8_t r0x01State = readADCI2CByte(R0x01_address);
+
+    // Set PGA gain to 2x via Reg0x01
+    writeADCI2CByte(R0x01_address, (r0x01State & 0b11111000) | 0b00000001);
+
+    // Switch PGA input to temp sensor via Reg0x11
+    setADCI2Cbit(R0x11_address, R0x11_TS_Bit, true);
+
+    // Run calibration
+    // bool calibrated = false;
+    // while (!calibrated) {
+    //     calibrated = calibrateADC();
+    //     if (!calibrated) {
+    //         printf("Cal failed\n");
+    //         sleep_ms(500);
+    //     }
+    // }
+
+    // Flush ADC
+    flushADC();
+
+    // Read temperature sensor
+    int32_t temperatureReading = averageADC(32);
+
+    // Switch PGA input to normal VINx
+    setADCI2Cbit(R0x11_address, R0x11_TS_Bit, false);
+
+    // Restore Reg0x01 state
+    writeADCI2CByte(R0x01_address, r0x01State);
+
+    // Run calibration
+    // calibrated = false;
+    // while (!calibrated) {
+    //     calibrated = calibrateADC();
+    //     if (!calibrated) {
+    //         printf("Cal failed\n");
+    //         sleep_ms(500);
+    //     }
+    // }
+
+    // Flush ADC
+    flushADC();
+
+    // Return
+    return temperatureReading;
 }
 
 static bool initialize() {
@@ -381,12 +452,8 @@ int main() {
 
     LEDBlink(2);
 
-    setOverflow();
-    writeDataBuffer();
-
     printf("Starting.\n");
 
-    sleep_ms(3000);
 
     // int32_t calibration = averageADC(32);
 
@@ -404,37 +471,37 @@ int main() {
     //     printf("Reading: %d\n", reading);
     //     sleep_ms(500);
     // }
-    int count = 100;
-    int32_t readings[count];
-    int32_t readingAcc = 0;
-    // int32_t average = averageADC(count);
+    // int count = 100;
+    // int32_t readings[count];
+    // int32_t readingAcc = 0;
+    // // int32_t average = averageADC(count);
 
-    for (int i = 0; i < count; i++) {
-        int32_t reading = readADC();
-        sleep_us(ADC_DELAY);
-        readings[i] = reading;
-    }
+    // for (int i = 0; i < count; i++) {
+    //     int32_t reading = readADC();
+    //     sleep_us(ADC_DELAY);
+    //     readings[i] = reading;
+    // }
 
-    int32_t max = INT32_MIN;
-    int32_t min = INT32_MAX;
+    // int32_t max = INT32_MIN;
+    // int32_t min = INT32_MAX;
 
-    for (int i = 0; i < count; i++) {
-        int32_t reading = readings[i];
+    // for (int i = 0; i < count; i++) {
+    //     int32_t reading = readings[i];
 
-        readingAcc += reading;
+    //     readingAcc += reading;
 
-        if (reading > max) {
-            max = reading;
-        }
+    //     if (reading > max) {
+    //         max = reading;
+    //     }
 
-        if (reading < min) {
-            min = reading;
-        }
-    }
+    //     if (reading < min) {
+    //         min = reading;
+    //     }
+    // }
 
-    int range = abs(max - min);
-    int average = readingAcc / count;
-    printf("Min: %d, max: %d, range: %d, average: %d\n", min, max, range, average);
+    // int range = abs(max - min);
+    // int average = readingAcc / count;
+    // printf("Min: %d, max: %d, range: %d, average: %d\n", min, max, range, average);
 
     // setInteger(range);
     // writeDataBuffer();
@@ -445,27 +512,40 @@ int main() {
 
     // printf("Done.\n");
 
-    int readingCount = 0;
+    // int readingCount = 0;
+
+    flushADC();
+    int32_t zeroReading = averageADC(64);
+
+    setOverflow();
+    writeDataBuffer();
+
+    sleep_ms(5000);
+
+    // int32_t initialTemperature = readTemperatureSensor();
+
     while (true) {
-        int32_t reading = averageADC(32);
-        double display = (double)(reading - average) / 420;  // 408
-        setDouble(display);
+        double reading = (double)(averageADC(64) - zeroReading) / 408;
+        // int32_t tempDelta = readTemperatureSensor() - initialTemperature;
+        printf("%.2f\n", reading);
+        setDouble(reading);
         writeDataBuffer();
-        readingCount++;
-        if (readingCount > 100) {
-            setOverflow();
-            writeDataBuffer();
-            bool calibrated = false;
-            while (!calibrated) {
-                calibrated = calibrateADC();
-                if (!calibrated) {
-                    printf("Cal failed\n");
-                    sleep_ms(500);
-                } else {
-                    printf("Cal succeeded\n");
-                }
-            }
-            readingCount = 0;
-        }
+        sleep_ms(1000);
+        // readingCount++;
+        // if (readingCount > 100) {
+        //     setOverflow();
+        //     writeDataBuffer();
+        //     bool calibrated = false;
+        //     while (!calibrated) {
+        //         calibrated = calibrateADC();
+        //         if (!calibrated) {
+        //             printf("Cal failed\n");
+        //             sleep_ms(500);
+        //         } else {
+        //             printf("Cal succeeded\n");
+        //         }
+        //     }
+        //     readingCount = 0;
+        // }
     }
 }
