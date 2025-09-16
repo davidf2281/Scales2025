@@ -118,8 +118,23 @@ static void initDisplay() {
     i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
 }
 
-static void writeADCI2C(uint8_t *registerAddress, uint8_t *data, uint8_t length) {
-    i2c_write_blocking(i2c_default, ADCI2CAddress, data, length, false);
+static void writeADCI2CByte(uint8_t registerAddress, uint8_t data) {
+    uint8_t writeBuffer[2];
+    writeBuffer[0] = registerAddress;
+    writeBuffer[1] = data;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+}
+
+static uint8_t readADCI2CByte(uint8_t registerAddress) {
+    uint8_t result[1];
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &registerAddress, 1, false);
+    i2c_read_blocking(i2c_default, ADCI2CAddress, result, 1, false);
+    return result[0];
+}
+
+static void readADCI2CBytes(uint8_t registerAddress, uint8_t *buffer, uint8_t length) {
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &registerAddress, 1, false);
+    i2c_read_blocking(i2c_default, ADCI2CAddress, buffer, length, false);
 }
 
 // Returns true if calibration successful; false otherwise
@@ -127,49 +142,27 @@ static bool calibrateADC() {
     uint8_t writeBuffer[2];
 
     // Kick off device internal calibration
-    writeBuffer[0] = R0x02_address;
-    writeBuffer[1] = R0x02_CALS_Bit;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
-
+    writeADCI2CByte(R0x02_address, R0x02_CALS_Bit);
+    LEDBlink(1);
     // Wait for calibration and check it's complete
     sleep_ms(500);
-    uint8_t calibrationResultByte = 0;
-    while ((calibrationResultByte & R0x02_CALS_Bit) == 1) {
-        i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x02_address, 1, false);
-        calibrationResultByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &calibrationResultByte, 1, false);
+    bool done = false;
+    while (!done) {
+        done = (readADCI2CByte(R0x02_address) & R0x02_CALS_Bit) == 0;
         sleep_us(200);
     }
-
+    LEDBlink(1);
     // Get the calibration error flag:
-    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x02_address, 1, false);
-    calibrationResultByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &calibrationResultByte, 1, false);
-
+    uint8_t calibrationResultByte = readADCI2CByte(R0x02_address);
     bool success = ((calibrationResultByte & R0x02_CAL_ERR_Bit) == 0);
-
-    if (success) {
-        printf("Calibration successfully completed.\n");
-    }
 
     return success;
 }
 
 static int32_t readADC() {
-    // sleep_ms(200);
-
-    // Wait until Conversion-ready flag is high
-    // i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-    // uint8_t dataReadByte;
-    // i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
-    // while (!(dataReadByte & R0x00_CR_Bit)) {
-    //     LEDBlink(1);
-    //     i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-    //     dataReadByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
-    // }
-
     // Read the three ADC bytes
     uint8_t reading[3];
-    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x12_address, 1, false);
-    i2c_read_blocking(i2c_default, ADCI2CAddress, reading, 3, false);
+    readADCI2CBytes(R0x12_address, reading, 3);
 
     int32_t value = (int32_t)((reading[0] << 16) | (reading[1] << 8) | reading[2]);
 
@@ -186,37 +179,23 @@ static void initADC() {
     uint8_t writeBuffer[2];
 
     // 1. Set the RR bit to 1 in R0x00, to guarantee a reset of all register values.
-    writeBuffer[0] = R0x00_address;
-    writeBuffer[1] = 0b00000000 | R0x00_RR_Bit;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    writeADCI2CByte(R0x00_address, R0x00_RR_Bit);
 
     // 2. Set the RR bit to 0 and PUD bit 1, in R0x00, to enter normal operation
-    writeBuffer[0] = R0x00_address;
-    writeBuffer[1] = (R0x00_RR_Bit & 0b00000000) | R0x00_PUD_Bit;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    writeADCI2CByte(R0x00_address, (R0x00_RR_Bit & 0b00000000) | R0x00_PUD_Bit);
 
     // 3. After about 200 microseconds, the PWRUP bit will be Logic 1,
     // indicating the device is ready for the remaining programming setup.
-    sleep_us(250);
-    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-    uint8_t dataReadByte;
-    i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
-    while (!(dataReadByte & R0x00_PUR_Bit)) {
-        i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-        dataReadByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
-    }
+
+    sleep_us(300);
+    while(!(readADCI2CByte(R0x00_address) & R0x00_PUR_Bit));
 
     // Write register R0x00 configuration:
-    uint8_t configuration = 0xAE;  // Internal LDO selected; internal oscillator; power up analog and digital circuits.
-    writeBuffer[0] = R0x00_address;
-    writeBuffer[1] = configuration;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    writeADCI2CByte(R0x00_address, 0xAE); // Internal LDO selected; internal oscillator; power up analog and digital circuits.
 
     // Enable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed):
-    static const uint8_t R0x1C_PGA_CAP_EN_Bit = 0b10000000;
-    writeBuffer[0] = R0x1C_address;
-    writeBuffer[1] = 0b00000000 | R0x1C_PGA_CAP_EN_Bit;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    const uint8_t R0x1C_PGA_CAP_EN_Bit = 0b10000000;
+    writeADCI2CByte(R0x1C_address, R0x1C_PGA_CAP_EN_Bit);
 
     /*
         Set device LDO output voltage and analogue input gain:
@@ -225,24 +204,16 @@ static void initADC() {
     */
     const uint8_t LDOVoltageMask = 0b00010000;
     const uint8_t gainSelectMask = 0b00000111;
-    writeBuffer[0] = R0x01_address;
-    writeBuffer[1] = LDOVoltageMask | gainSelectMask;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    writeADCI2CByte(R0x01_address, LDOVoltageMask | gainSelectMask);
 
     // Ensure LDO mode bit is zero
-    writeBuffer[0] = R0x1B_address;
-    writeBuffer[1] = 0;  // R0x1B_PGACHPDIS_Bit; //| R0x1B_PGA_BUFFER_ENABLE | R0x1B_PGA_LDO_MODE;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    writeADCI2CByte(R0x1B_address, 0);
 
     // Disable ADC chopper
-    writeBuffer[0] = R0x15_address;
-    writeBuffer[1] = 0b00110000;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    writeADCI2CByte(R0x15_address, 0b00110000);
 
     // Set sample rate to 80SPS
-    writeBuffer[0] = R0x02_address;
-    writeBuffer[1] = 0b01100000;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+    writeADCI2CByte(R0x02_address,0b01100000);
 
     // Wait for LDO to stablize
     sleep_ms(300);
