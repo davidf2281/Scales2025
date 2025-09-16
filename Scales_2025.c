@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
@@ -12,8 +13,11 @@ const int ADCI2CAddress = 0x2A;
 // ADC constants
 const uint8_t R0x00_address = 0x00;
 const uint8_t R0x01_address = 0x01;
+const uint8_t R0x02_address = 0x02;
 const uint8_t R0x1C_address = 0x1C;
 const uint8_t R0x12_address = 0x12;          // Start address of three-byte ADC reading
+const uint8_t R0x15_address = 0x15;          // ADC control register
+const uint8_t R0x1B_address = 0x1B;          // PGA (programmable gain amplifier) control register
 const uint8_t R0x00_RR_Bit = 0b00000001;     // Register reset. 1 = Register Reset, reset all register except RR. 0 = Normal Operation (default). RR is a level trigger reset control. RR=1, enter reset state, RR=0, leave reset state back to normal state.
 const uint8_t R0x00_PUD_Bit = 0b00000010;    // Power up digital circuit. 1 = Power up the chip digital logic, 0 = power down (default)
 const uint8_t R0x00_PUA_Bit = 0b00000100;    // Power up analog circuit. 1 = Power up the chip analog circuits (PUD must be 1). 0 = Power down (default)
@@ -22,6 +26,12 @@ const uint8_t R0x00_CS_Bit = 0b00010000;     // Cycle start. Synchronize convers
 const uint8_t R0x00_CR_Bit = 0b00100000;     // Cycle ready (Read only Status). 1 = ADC DATA is ready
 const uint8_t R0x00_OSCS_Bit = 0b01000000;   // System clock source select. 1 = External Crystal, 0 = Internal RC oscillator (default)
 const uint8_t R0x00_AVDDS_Bit = 0b10000000;  // AVDD source select. 1 = Internal LDO, 0 = AVDD pin input (default)
+const uint8_t R0x02_CALS_Bit = 0b00000100;
+const uint8_t R0x02_CAL_ERR_Bit = 0b00001000;
+
+const uint8_t R0x1B_PGACHPDIS_Bit = 0b00000001;      // Chopper disable bit. 1 = disabled
+const uint8_t R0x1B_PGA_BUFFER_ENABLE = 0b00100000;  // Enable PGA output buffer
+const uint8_t R0x1B_PGA_LDO_MODE = 0b01000000;       // LDO mode 1 = "improved stability and lower DC gain, can accommodate ESR < 5 ohms (output capacitance)"
 
 // Display constants
 const uint8_t digitPattern0 = 0b00111111;
@@ -108,6 +118,70 @@ static void initDisplay() {
     i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
 }
 
+static void writeADCI2C(uint8_t *registerAddress, uint8_t *data, uint8_t length) {
+    i2c_write_blocking(i2c_default, ADCI2CAddress, data, length, false);
+}
+
+// Returns true if calibration successful; false otherwise
+static bool calibrateADC() {
+    uint8_t writeBuffer[2];
+
+    // Kick off device internal calibration
+    writeBuffer[0] = R0x02_address;
+    writeBuffer[1] = R0x02_CALS_Bit;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // Wait for calibration and check it's complete
+    sleep_ms(500);
+    uint8_t calibrationResultByte = 0;
+    while ((calibrationResultByte & R0x02_CALS_Bit) == 1) {
+        i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x02_address, 1, false);
+        calibrationResultByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &calibrationResultByte, 1, false);
+        sleep_us(200);
+    }
+
+    // Get the calibration error flag:
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x02_address, 1, false);
+    calibrationResultByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &calibrationResultByte, 1, false);
+
+    bool success = ((calibrationResultByte & R0x02_CAL_ERR_Bit) == 0);
+
+    if (success) {
+        printf("Calibration successfully completed.\n");
+    }
+
+    return success;
+}
+
+static int32_t readADC() {
+    // sleep_ms(200);
+
+    // Wait until Conversion-ready flag is high
+    // i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+    // uint8_t dataReadByte;
+    // i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
+    // while (!(dataReadByte & R0x00_CR_Bit)) {
+    //     LEDBlink(1);
+    //     i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
+    //     dataReadByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
+    // }
+
+    // Read the three ADC bytes
+    uint8_t reading[3];
+    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x12_address, 1, false);
+    i2c_read_blocking(i2c_default, ADCI2CAddress, reading, 3, false);
+
+    int32_t value = (int32_t)((reading[0] << 16) | (reading[1] << 8) | reading[2]);
+
+    // Extend the sign into the topmost byte with a bitwise left-shift
+    // followed by an arithmetic right-shift:
+    value = (value << 8) >> 8;
+
+    // uint32_t result = ((uint32_t)reading[0] << 16) | ((uint32_t)reading[1] << 8) | (uint32_t)reading[2];
+
+    return value;
+}
+
 static void initADC() {
     uint8_t writeBuffer[2];
 
@@ -149,60 +223,51 @@ static void initADC() {
             Bits 5 to 3 of register 0x01 select LDO voltage. 100 == 3.3V
             Bits 2 to 0 of register 0x01 select device gain. 111 == 128x
     */
-    const uint8_t LDOVoltageMask = 0b00100000;
+    const uint8_t LDOVoltageMask = 0b00010000;
     const uint8_t gainSelectMask = 0b00000111;
     writeBuffer[0] = R0x01_address;
     writeBuffer[1] = LDOVoltageMask | gainSelectMask;
     i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
 
-    // 5. No conversion will take place until the R0x00 bit 4 “CS” is set Logic = 1
-    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-    uint8_t current0x0;
-    i2c_read_blocking(i2c_default, ADCI2CAddress, &current0x0, 1, false);
-    writeBuffer[0] = R0x00_address;
-    const uint8_t conversionCycleStartMask = 0b00010000;
-    writeBuffer[1] = current0x0 | conversionCycleStartMask;
-    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
-}
-
-static uint32_t readADC() {
-
-     // 5. No conversion will take place until the R0x00 bit 4 “CS” is set Logic = 1
-     // TODO: Try removing this when we've sussed out why averageADC() isn't working
-    uint8_t writeBuffer[2];
-    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-    uint8_t current0x0;
-    i2c_read_blocking(i2c_default, ADCI2CAddress, &current0x0, 1, false);
-    writeBuffer[0] = R0x00_address;
-    const uint8_t conversionCycleStartMask = 0b00010000;
-    writeBuffer[1] = current0x0 | conversionCycleStartMask;
+    // Ensure LDO mode bit is zero
+    writeBuffer[0] = R0x1B_address;
+    writeBuffer[1] = 0;  // R0x1B_PGACHPDIS_Bit; //| R0x1B_PGA_BUFFER_ENABLE | R0x1B_PGA_LDO_MODE;
     i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
 
-    // Wait until Conversion-ready flag is high
-    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-    uint8_t dataReadByte;
-    i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
-    while (!(dataReadByte & R0x00_CR_Bit)) {
-        LEDBlink(1);
-        i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x00_address, 1, false);
-        dataReadByte = i2c_read_blocking(i2c_default, ADCI2CAddress, &dataReadByte, 1, false);
+    // Disable ADC chopper
+    writeBuffer[0] = R0x15_address;
+    writeBuffer[1] = 0b00110000;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // Set sample rate to 80SPS
+    writeBuffer[0] = R0x02_address;
+    writeBuffer[1] = 0b01100000;
+    i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
+
+    // Wait for LDO to stablize
+    sleep_ms(300);
+
+    // Flush
+    readADC();
+
+    // Kick off device internal calibration
+    bool calibrated = false;
+    while (!calibrated) {
+        calibrated = calibrateADC();
+        if (!calibrated) {
+            printf("Cal failed\n");
+            sleep_ms(500);
+        }
     }
-
-    // Read three ADC bytes
-    uint8_t reading[3];
-    i2c_write_blocking(i2c_default, ADCI2CAddress, &R0x12_address, 1, false);
-    i2c_read_blocking(i2c_default, ADCI2CAddress, reading, 3, false);
-
-    uint32_t result = ((uint32_t)reading[0] << 16) | ((uint32_t)reading[1] << 8) | (uint32_t)reading[2];
-
-    return result;
 }
 
-uint32_t averageADC(uint8_t samples) {
-    uint32_t tally = 0;
+#define ADC_DELAY 12500
+
+int32_t averageADC(uint8_t samples) {
+    int32_t tally = 0;
     for (int i = 0; i < samples; i++) {
         tally += readADC();
-        sleep_ms(100);
+        sleep_us(ADC_DELAY);
     }
     return tally / samples;
 }
@@ -348,17 +413,88 @@ int main() {
     setOverflow();
     writeDataBuffer();
 
-    sleep_ms(3000);
     printf("Starting.\n");
- 
-    uint32_t calibration = averageADC(4);
 
+    sleep_ms(3000);
+
+    // int32_t calibration = averageADC(32);
+
+    // while (true) {
+    //     int32_t reading = averageADC(32);
+    //     double display = (double)(reading - calibration) / 408;
+    //     setDouble(display);
+    //     writeDataBuffer();
+    //     printf("Reading: %d\n", reading);
+    //     printf("Display: %f\n\n", display);
+    // }
+
+    // while (true) {
+    //     int32_t reading = readADC();
+    //     printf("Reading: %d\n", reading);
+    //     sleep_ms(500);
+    // }
+    int count = 100;
+    int32_t readings[count];
+    int32_t readingAcc = 0;
+    // int32_t average = averageADC(count);
+
+    for (int i = 0; i < count; i++) {
+        int32_t reading = readADC();
+        sleep_us(ADC_DELAY);
+        readings[i] = reading;
+    }
+
+    int32_t max = INT32_MIN;
+    int32_t min = INT32_MAX;
+
+    for (int i = 0; i < count; i++) {
+        int32_t reading = readings[i];
+
+        readingAcc += reading;
+
+        if (reading > max) {
+            max = reading;
+        }
+
+        if (reading < min) {
+            min = reading;
+        }
+    }
+
+    int range = abs(max - min);
+    int average = readingAcc / count;
+    printf("Min: %d, max: %d, range: %d, average: %d\n", min, max, range, average);
+
+    // setInteger(range);
+    // writeDataBuffer();
+
+    // for (int i = 0; i < count; i++) {
+    //     printf("%d\n", readings[i]);
+    // }
+
+    // printf("Done.\n");
+
+    int readingCount = 0;
     while (true) {
-        uint32_t reading = averageADC(4);
-        double display = (double)((reading - calibration) / 1000);
+        int32_t reading = averageADC(32);
+        double display = (double)(reading - average) / 420;  // 408
         setDouble(display);
         writeDataBuffer();
-        printf("Reading: %lu\n", reading);
-        printf("Display: %f\n\n", display);
+        readingCount++;
+        if (readingCount > 100) {
+            setOverflow();
+            writeDataBuffer();
+            bool calibrated = false;
+            while (!calibrated) {
+                calibrated = calibrateADC();
+                if (!calibrated) {
+                    printf("Cal failed\n");
+                    sleep_ms(500);
+                } else {
+                    printf("Cal succeeded\n");
+                }
+            }
+            readingCount = 0;
+        }
     }
 }

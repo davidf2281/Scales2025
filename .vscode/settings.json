@@ -48,6 +48,9 @@
         "tuple": "c",
         "type_traits": "c",
         "utility": "c",
-        "cstdint": "c"
+        "cstdint": "c",
+        "string": "c",
+        "string_view": "c",
+        "span": "c"
     }
 }
