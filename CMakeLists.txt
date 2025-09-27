@@ -35,7 +35,10 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(Scales_2025 Scales_2025.c )
+add_executable(Scales_2025 
+Scales_2025.c
+BME280.c
+)
 
 pico_set_program_name(Scales_2025 "Scales_2025")
 pico_set_program_version(Scales_2025 "0.1")

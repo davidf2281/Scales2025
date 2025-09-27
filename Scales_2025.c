@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "BME280.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
 #include "hardware/sync.h"
@@ -11,12 +12,13 @@
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
+const int BME280I2CAddress = 0x76;
 
 // ADC constants
 const uint8_t R0x00_address = 0x00;
 const uint8_t R0x01_address = 0x01;
 const uint8_t R0x02_address = 0x02;
-const uint8_t R0x11_address = 0x11;          // I2C control
+const uint8_t R0x11_address = 0x11;  // I2C control
 const uint8_t R0x1C_address = 0x1C;
 const uint8_t R0x12_address = 0x12;          // Start address of three-byte ADC reading
 const uint8_t R0x15_address = 0x15;          // ADC control register
@@ -33,7 +35,6 @@ const uint8_t R0x02_CALS_Bit = 0b00000100;
 const uint8_t R0x02_CAL_ERR_Bit = 0b00001000;
 
 const uint8_t R0x11_TS_Bit = 0b00000010;
-
 
 const uint8_t R0x1B_PGACHPDIS_Bit = 0b00000001;      // Chopper disable bit. 1 = disabled
 const uint8_t R0x1B_PGA_BUFFER_ENABLE = 0b00100000;  // Enable PGA output buffer
@@ -71,6 +72,33 @@ uint8_t *const addrDigit2 = dataWriteBuffer + 7;
 uint8_t *const addrDigit3 = dataWriteBuffer + 9;
 uint8_t *const addrColon = dataWriteBuffer + 5;
 
+// BME280 (temperature sensor) constants
+const uint8_t BME280_control_reset = 0xE0;
+const uint8_t BME280_control_deviceID = 0xD0;
+const uint8_t BME280_control_hum = 0xF2;
+const uint8_t BME280_control_meas = 0xF4;
+const uint8_t BME280_cal_reg_digT1 = 0x88;
+const uint8_t BME280_cal_reg_digT2 = 0x8A;
+const uint8_t BME280_cal_reg_digT3 = 0x8C;
+const uint8_t BME280_cal_reg_digP1 = 0x8E;
+const uint8_t BME280_cal_reg_digP2 = 0x90;
+const uint8_t BME280_cal_reg_digP3 = 0x92;
+const uint8_t BME280_cal_reg_digP4 = 0x94;
+const uint8_t BME280_cal_reg_digP5 = 0x96;
+const uint8_t BME280_cal_reg_digP6 = 0x98;
+const uint8_t BME280_cal_reg_digP7 = 0x9A;
+const uint8_t BME280_cal_reg_digP8 = 0x9C;
+const uint8_t BME280_cal_reg_digP9 = 0x9E;
+const uint8_t BME280_cal_reg_digH1 = 0xA1;
+const uint8_t BME280_cal_reg_digH2 = 0xE1;
+const uint8_t BME280_cal_reg_digH3 = 0xE3;
+const uint8_t BME280_cal_reg_digH4 = 0xE4;
+const uint8_t BME280_cal_reg_digH5 = 0xE5;
+const uint8_t BME280_cal_reg_digH6 = 0xE7;
+const uint8_t BME280_reg_pressure_data = 0xF7;
+const uint8_t BME280_reg_temperature_data = 0xFA;
+
+// I2C constants
 const uint CLOCK_PIN = 14;
 const uint DATA_PIN = 15;
 
@@ -189,7 +217,7 @@ static int32_t readADC() {
 }
 
 static void flushADC() {
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 6; i++) {
         readADC();
         sleep_us(ADC_DELAY);
     }
@@ -208,10 +236,10 @@ static void initADC() {
     // indicating the device is ready for the remaining programming setup.
 
     sleep_us(300);
-    while(!(readADCI2CByte(R0x00_address) & R0x00_PUR_Bit));
+    while (!(readADCI2CByte(R0x00_address) & R0x00_PUR_Bit));
 
     // Write register R0x00 configuration:
-    writeADCI2CByte(R0x00_address, 0xAE); // Internal LDO selected; internal oscillator; power up analog and digital circuits.
+    writeADCI2CByte(R0x00_address, 0xAE);  // Internal LDO selected; internal oscillator; power up analog and digital circuits.
 
     // Enable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed):
     const uint8_t R0x1C_PGA_CAP_EN_Bit = 0b10000000;
@@ -233,13 +261,13 @@ static void initADC() {
     writeADCI2CByte(R0x15_address, 0b00110000);
 
     // Set sample rate to 80SPS
-    writeADCI2CByte(R0x02_address,0b01100000);
+    writeADCI2CByte(R0x02_address, 0b01100000);
 
     // Wait for LDO to stablize
     sleep_ms(300);
 
     // Flush
-    readADC();
+    flushADC();
 
     // Kick off device internal calibration
     bool calibrated = false;
@@ -262,56 +290,81 @@ int32_t averageADC(uint8_t samples) {
 }
 
 
-static int32_t readTemperatureSensor() {
+static void writeBME280Byte(uint8_t registerAddress, uint8_t data) {
+    uint8_t writeBuffer[2];
+    writeBuffer[0] = registerAddress;
+    writeBuffer[1] = data;
+    i2c_write_blocking(i2c_default, BME280I2CAddress, writeBuffer, 2, false);
+}
 
-    sleep_us(ADC_DELAY);
+static void resetBME280() {
+    writeBME280Byte(BME280_control_reset, 0xB6);
+    sleep_ms(100);
+}
 
-    // Record current Reg0x01 state
-    uint8_t r0x01State = readADCI2CByte(R0x01_address);
+static uint8_t readBME280I2CByte(uint8_t registerAddress) {
+    uint8_t result[1];
+    i2c_write_blocking(i2c_default, BME280I2CAddress, &registerAddress, 1, false);
+    i2c_read_blocking(i2c_default, BME280I2CAddress, result, 1, false);
+    return result[0];
+}
 
-    // Set PGA gain to 2x via Reg0x01
-    writeADCI2CByte(R0x01_address, (r0x01State & 0b11111000) | 0b00000001);
+static uint16_t readBME280I2CWord(uint8_t registerAddress) {
+    uint8_t result[2];
+    i2c_write_blocking(i2c_default, BME280I2CAddress, &registerAddress, 1, false);
+    i2c_read_blocking(i2c_default, BME280I2CAddress, result, 2, false);
+    return (uint16_t)((uint16_t)result[1] << 8 | (uint16_t)result[0]);  // LSB first
+}
 
-    // Switch PGA input to temp sensor via Reg0x11
-    setADCI2Cbit(R0x11_address, R0x11_TS_Bit, true);
+static bme280_calib_data readBME280CalibrationData() {
+    bme280_calib_data calibData;
 
-    // Run calibration
-    // bool calibrated = false;
-    // while (!calibrated) {
-    //     calibrated = calibrateADC();
-    //     if (!calibrated) {
-    //         printf("Cal failed\n");
-    //         sleep_ms(500);
-    //     }
-    // }
+    calibData.dig_t1 = readBME280I2CWord(BME280_cal_reg_digT1);
+    calibData.dig_t2 = (int16_t)readBME280I2CWord(BME280_cal_reg_digT2);
+    calibData.dig_t3 = (int16_t)readBME280I2CWord(BME280_cal_reg_digT3);
 
-    // Flush ADC
-    flushADC();
+    // printf("Calib data t1: %u, t2: %i, t3: %i\n", calibData.dig_t1, calibData.dig_t2, calibData.dig_t3);
 
-    // Read temperature sensor
-    int32_t temperatureReading = averageADC(32);
+    return calibData;
+}
 
-    // Switch PGA input to normal VINx
-    setADCI2Cbit(R0x11_address, R0x11_TS_Bit, false);
+double getTemperature(bme280_calib_data *calibData) {
+    // Write humidity config, which acccording to the BME280 datasheet must be done before writing measurement config
+    uint8_t humidtyConfig = 0;
+    writeBME280Byte(BME280_control_hum, humidtyConfig);
 
-    // Restore Reg0x01 state
-    writeADCI2CByte(R0x01_address, r0x01State);
+    // Write measurement config to put the device into forced mode, which will start a measurement
+    uint8_t ctrlMeasConfig = 0b01101110;  // 4x temperature oversampling, 4x pressure oversample, sensor to forced mode.
+    writeBME280Byte(BME280_control_meas, ctrlMeasConfig);
 
-    // Run calibration
-    // calibrated = false;
-    // while (!calibrated) {
-    //     calibrated = calibrateADC();
-    //     if (!calibrated) {
-    //         printf("Cal failed\n");
-    //         sleep_ms(500);
-    //     }
-    // }
+    // Wait for measurement
+    sleep_ms(100);
 
-    // Flush ADC
-    flushADC();
+    // Read temperature
+    uint8_t temperatureByte1 = readBME280I2CByte(BME280_reg_temperature_data);  // MSB
+    uint8_t temperatureByte2 = readBME280I2CByte(BME280_reg_temperature_data + 1);
+    uint8_t temperatureByte3 = readBME280I2CByte(BME280_reg_temperature_data + 2);  // LSB (top four bits only)
 
-    // Return
-    return temperatureReading;
+    // printf("Temp byte1: %u, byte2: %u, byte3: %u\n", temperatureByte1, temperatureByte2, temperatureByte3);
+
+    // Temperature readout is the top 20 bits of the three bytes
+    uint32_t uncompTemperatureValue = (uint32_t)((uint32_t)temperatureByte1 << 12 | (uint32_t)temperatureByte2 << 4 | (uint32_t)temperatureByte3 >> 4);
+
+    // printf("Uncomp temp here: %u\n", uncompTemperatureValue);
+
+    // Note: compensate_temperature() must be called before compensate_pressure()
+    // because it calculates and sets t_fine in the calibData struct
+    struct bme280_uncomp_data uncompData;
+    uncompData.temperature = uncompTemperatureValue;
+    // printf("Uncomp temp here too : %u\n", uncompData.temperature);
+
+    double compTemperature = compensate_temperature(&uncompData, calibData);
+
+    return compTemperature;
+}
+
+static void initBME280() {
+    resetBME280();
 }
 
 static bool initialize() {
@@ -321,7 +374,8 @@ static bool initialize() {
     initGPIO();
     initI2C();
     initDisplay();
-    initADC();
+    // initADC();
+    // initBME280();
 }
 
 static void writeDataBuffer() {
@@ -424,6 +478,14 @@ static int truncateToIntWithRounding(double value) {
     return (int)value;
 }
 
+// Maximum sleep_ms is just over a minute, so
+// this function allows larger sleep times
+static void sleep_minutes(uint32_t minutes) {
+    for (int i = 0; i < minutes; i++) {
+        sleep_ms(60000);
+    }
+}
+
 static void setDouble(double value) {
     if (value >= 10000) {
         setOverflow();
@@ -452,100 +514,40 @@ int main() {
 
     LEDBlink(2);
 
-    printf("Starting.\n");
+    // bme280_calib_data calibData = readBME280CalibrationData();
 
+    // flushADC();
+    
+    // int32_t zeroReading = averageADC(64);
 
-    // int32_t calibration = averageADC(32);
-
-    // while (true) {
-    //     int32_t reading = averageADC(32);
-    //     double display = (double)(reading - calibration) / 408;
-    //     setDouble(display);
-    //     writeDataBuffer();
-    //     printf("Reading: %d\n", reading);
-    //     printf("Display: %f\n\n", display);
-    // }
-
-    // while (true) {
-    //     int32_t reading = readADC();
-    //     printf("Reading: %d\n", reading);
-    //     sleep_ms(500);
-    // }
-    // int count = 100;
-    // int32_t readings[count];
-    // int32_t readingAcc = 0;
-    // // int32_t average = averageADC(count);
-
-    // for (int i = 0; i < count; i++) {
-    //     int32_t reading = readADC();
-    //     sleep_us(ADC_DELAY);
-    //     readings[i] = reading;
-    // }
-
-    // int32_t max = INT32_MIN;
-    // int32_t min = INT32_MAX;
-
-    // for (int i = 0; i < count; i++) {
-    //     int32_t reading = readings[i];
-
-    //     readingAcc += reading;
-
-    //     if (reading > max) {
-    //         max = reading;
-    //     }
-
-    //     if (reading < min) {
-    //         min = reading;
-    //     }
-    // }
-
-    // int range = abs(max - min);
-    // int average = readingAcc / count;
-    // printf("Min: %d, max: %d, range: %d, average: %d\n", min, max, range, average);
-
-    // setInteger(range);
-    // writeDataBuffer();
-
-    // for (int i = 0; i < count; i++) {
-    //     printf("%d\n", readings[i]);
-    // }
-
-    // printf("Done.\n");
-
-    // int readingCount = 0;
-
-    flushADC();
-    int32_t zeroReading = averageADC(64);
+    // double initialTemperature = getTemperature(&calibData);
 
     setOverflow();
     writeDataBuffer();
 
-    sleep_ms(5000);
+    // sleep_ms(20000);
 
-    // int32_t initialTemperature = readTemperatureSensor();
+    printf("Starting.\n");
 
-    while (true) {
-        double reading = (double)(averageADC(64) - zeroReading) / 408;
-        // int32_t tempDelta = readTemperatureSensor() - initialTemperature;
-        printf("%.2f\n", reading);
-        setDouble(reading);
-        writeDataBuffer();
+    // printf("Initial ADC reading: %i, initial temp reading: %.2f\n", zeroReading, initialTemperature);
+
+    // printf("Waiting 30 mins for temp equalisation\n");
+
+    // sleep_minutes(30);
+
+    // for (int i = 0; i < 1440; i++) {
+    //     double reading = averageADC(64);
+    //     double mass = (double)(reading - zeroReading) / 408.0;
+    //     double temperature = getTemperature(&calibData);
+    //     double tempDiff = temperature - initialTemperature;
+    //     printf("%.3f, %.3f, %.3f\n", mass, tempDiff, temperature);
+    //     sleep_ms(1000);
+    // }
+
+    while(true) {
+        LEDBlink(4);
         sleep_ms(1000);
-        // readingCount++;
-        // if (readingCount > 100) {
-        //     setOverflow();
-        //     writeDataBuffer();
-        //     bool calibrated = false;
-        //     while (!calibrated) {
-        //         calibrated = calibrateADC();
-        //         if (!calibrated) {
-        //             printf("Cal failed\n");
-        //             sleep_ms(500);
-        //         } else {
-        //             printf("Cal succeeded\n");
-        //         }
-        //     }
-        //     readingCount = 0;
-        // }
     }
+
+    // printf("Done.\n");
 }
