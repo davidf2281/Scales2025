@@ -37,7 +37,6 @@ pico_sdk_init()
 
 add_executable(Scales_2025 
 Scales_2025.c
-BME280.c
 )
 
 pico_set_program_name(Scales_2025 "Scales_2025")
