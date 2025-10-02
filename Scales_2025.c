@@ -6,6 +6,7 @@
 #include "hardware/sync.h"
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
+#include "pico/time.h"
 
 #define ADC_DELAY_uS 100000
 
@@ -485,7 +486,7 @@ int main() {
     calibrateADC();
     flushADC();
     sleep_ms(300);
-    int32_t zeroScaleReading = averageADC(8);
+    int32_t zeroScaleReading = averageADC(1);
 
     // selectADCChannel(1);
     // setADCGain64();
@@ -497,19 +498,26 @@ int main() {
 
     setOverflow();
     writeDataBuffer();
+    
+    sleep_ms(10000);
 
     printf("Starting.\n");
 
-    // for (int i = 0; i < 1440; i++) {
-    while (true) {
+    int sampleCount = 2000;
+    int32_t samples[sampleCount];
+    absolute_time_t startTime = get_absolute_time();
+
+    for (int i = 0; i < sampleCount; i++) {
         // Scale reading
-        selectADCChannel(0);
-        setADCGain128();
+        // selectADCChannel(0);
+        // setADCGain128();
         // calibrateADC();
         // sleep_ms(300);
         // flushADC();
-        double scaleReading = averageADC(8);
-        double mass = (double)(scaleReading - zeroScaleReading) / 408.0;
+        samples[i] = averageADC(1);
+        // double scaleReading = averageADC(1);
+
+        // double mass = (double)(scaleReading - zeroScaleReading) / 408.0;
 
         // Temperature reading
         // selectADCChannel(1);
@@ -520,13 +528,24 @@ int main() {
         // checkPGACAP();
         // double temperatureReading = averageADC(16);
 
-        printf("%.3f, %.3f\n", mass /*, temperatureReading - zeroTemperatureReading*/);
+        // printf("%.3f, %.3f\n", mass /*, temperatureReading - zeroTemperatureReading*/);
 
         // double temperature = getTemperature(&calibData);
         // double tempDiff = temperature - initialTemperature;
         // printf("%.3f, %.3f, %.3f\n", mass, tempDiff, temperature);
         // sleep_ms(500);
     }
+
+    absolute_time_t endTime = get_absolute_time();
+    uint32_t startMillis = to_ms_since_boot(startTime);
+    uint32_t endMillis = to_ms_since_boot(endTime);
+
+    for (int i = 0; i < sampleCount; i++) {
+        double mass = (double)(samples[i] - zeroScaleReading) / 408.0;
+        printf("%.3f\n", mass);
+    }
+
+    printf("Done. Took %.1fs\n", (float)(endMillis - startMillis) / 1000.0);
 
     // while (true) {
     //     LEDBlink(4);
