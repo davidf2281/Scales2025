@@ -7,7 +7,7 @@
 #include "pico/binary_info.h"
 #include "pico/stdlib.h"
 
-#define ADC_DELAY_uS 12500
+#define ADC_DELAY_uS 100000
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
@@ -41,6 +41,8 @@ const uint8_t R0x11_TS_Bit = 0b00000010;
 const uint8_t R0x1B_PGACHPDIS_Bit = 0b00000001;      // Chopper disable bit. 1 = disabled
 const uint8_t R0x1B_PGA_BUFFER_ENABLE = 0b00100000;  // Enable PGA output buffer
 const uint8_t R0x1B_PGA_LDO_MODE = 0b01000000;       // LDO mode 1 = "improved stability and lower DC gain, can accommodate ESR < 5 ohms (output capacitance)"
+
+const uint8_t R0x1C_CAP_ENABLE = 0b10000000;  // Enables PGA output bypass capacitor connected across pins Vin2P Vin2N
 
 // Display constants
 const uint8_t digitPattern0 = 0b00111111;
@@ -137,7 +139,7 @@ static void initDisplay() {
 static void writeADCI2CByte(uint8_t registerAddress, uint8_t data) {
     uint8_t writeBuffer[2];
     writeBuffer[0] = registerAddress;
-    writeBuffer[1] = data;    
+    writeBuffer[1] = data;
     int errorByte = 0;
 
     errorByte = i2c_write_blocking(i2c_default, ADCI2CAddress, writeBuffer, 2, false);
@@ -230,6 +232,10 @@ static bool calibrateADC() {
 }
 
 static int32_t readADC() {
+    // while (!(readADCI2CByte(R0x00_address) & R0x00_CR_Bit)) {
+    sleep_us(ADC_DELAY_uS);
+    // }
+
     // Read the three ADC bytes
     uint8_t reading[3];
     readADCI2CBytes(R0x12_address, reading, 3);
@@ -244,9 +250,8 @@ static int32_t readADC() {
 }
 
 static void flushADC() {
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 6; i++) {
         readADC();
-        sleep_us(ADC_DELAY_uS);
     }
 }
 
@@ -268,9 +273,8 @@ static void initADC() {
     // Write register R0x00 configuration:
     writeADCI2CByte(R0x00_address, 0xAE);  // Internal LDO selected; internal oscillator; power up analog and digital circuits.
 
-    // // Enable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed):
-    // const uint8_t R0x1C_PGA_CAP_EN_Bit = 0b10000000;
-    // writeADCI2CByte(R0x1C_address, R0x1C_PGA_CAP_EN_Bit);
+    // Enable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed):
+    // writeADCI2CByte(R0x1C_address, R0x1C_CAP_ENABLE);
 
     // Disable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed) for two-channel operation:
     writeADCI2CByte(R0x1C_address, 0);
@@ -292,8 +296,8 @@ static void initADC() {
     // Disable ADC chopper
     writeADCI2CByte(R0x15_address, 0b00110000);
 
-    // Set sample rate to 80SPS
-    writeADCI2CByte(R0x02_address, 0b01100000);
+    // Set sample rate to 10SPS
+    writeADCI2CByte(R0x02_address, 0b00000000);
 
     // Wait for LDO to stablize
     sleep_ms(300);
@@ -316,7 +320,6 @@ int32_t averageADC(uint8_t samples) {
     int32_t tally = 0;
     for (int i = 0; i < samples; i++) {
         tally += readADC();
-        sleep_us(ADC_DELAY_uS);
     }
     return tally / samples;
 }
@@ -464,54 +467,71 @@ static void setDouble(double value) {
     }
 }
 
-int main() {
+static void checkPGACAP() {
+    if ((readADCI2CByte(R0x1C_address) & R0x1C_CAP_ENABLE) == R0x1C_CAP_ENABLE) {
+        printf("PGA cap is enabled\n");
+    } else {
+        printf("PGA cap is disabled\n");
+    }
+}
 
+int main() {
     initialize();
 
     LEDBlink(2);
 
-    // selectADCChannel(0);
-    // setADCGain128();
-    // flushADC();
-    int32_t zeroScaleReading = averageADC(64);
+    selectADCChannel(0);
+    setADCGain128();
+    calibrateADC();
+    flushADC();
+    sleep_ms(300);
+    int32_t zeroScaleReading = averageADC(8);
 
     // selectADCChannel(1);
     // setADCGain64();
+    // calibrateADC();
+    // checkPGACAP();
     // flushADC();
-    // int32_t zeroTemperatureReading = averageADC(64);
+    // sleep_ms(300);
+    // int32_t zeroTemperatureReading = averageADC(16);
 
     setOverflow();
     writeDataBuffer();
 
     printf("Starting.\n");
 
-    for (int i = 0; i < 1440; i++) {
-
+    // for (int i = 0; i < 1440; i++) {
+    while (true) {
         // Scale reading
-        // selectADCChannel(0);
-        // setADCGain128();
+        selectADCChannel(0);
+        setADCGain128();
+        // calibrateADC();
+        // sleep_ms(300);
         // flushADC();
-        double scaleReading = averageADC(64);
+        double scaleReading = averageADC(8);
         double mass = (double)(scaleReading - zeroScaleReading) / 408.0;
 
         // Temperature reading
         // selectADCChannel(1);
         // setADCGain64();
+        // calibrateADC();
         // flushADC();
-        // double temperatureReading = averageADC(64);
+        // sleep_ms(300);
+        // checkPGACAP();
+        // double temperatureReading = averageADC(16);
 
-        printf("%.3f, %.3f\n", mass/*, temperatureReading - zeroTemperatureReading*/);
+        printf("%.3f, %.3f\n", mass /*, temperatureReading - zeroTemperatureReading*/);
 
         // double temperature = getTemperature(&calibData);
         // double tempDiff = temperature - initialTemperature;
         // printf("%.3f, %.3f, %.3f\n", mass, tempDiff, temperature);
-        sleep_ms(500);
+        // sleep_ms(500);
     }
 
-    while (true) {
-        LEDBlink(4);
-        sleep_ms(1000);
-    }
+    // while (true) {
+    //     LEDBlink(4);
+    //     sleep_ms(1000);
+    // }
 
     // printf("Done.\n");
 }
