@@ -8,7 +8,7 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
-#define ADC_DELAY_uS 100000
+#define ADC_DELAY_uS 3125
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
@@ -275,10 +275,10 @@ static void initADC() {
     writeADCI2CByte(R0x00_address, 0xAE);  // Internal LDO selected; internal oscillator; power up analog and digital circuits.
 
     // Enable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed):
-    // writeADCI2CByte(R0x1C_address, R0x1C_CAP_ENABLE);
+    writeADCI2CByte(R0x1C_address, R0x1C_CAP_ENABLE);
 
     // Disable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed) for two-channel operation:
-    writeADCI2CByte(R0x1C_address, 0);
+    // writeADCI2CByte(R0x1C_address, 0);
 
     /*
         Set device LDO output voltage and analogue input gain:
@@ -297,8 +297,13 @@ static void initADC() {
     // Disable ADC chopper
     writeADCI2CByte(R0x15_address, 0b00110000);
 
-    // Set sample rate to 10SPS
-    writeADCI2CByte(R0x02_address, 0b00000000);
+    // Set sample rate to 10SPS (bits 6 to 0):
+    // 111 = 320SPS
+    // 011 = 80SPS
+    // 010 = 40SPS
+    // 001 = 20SPS
+    // 000 = 10SPS
+    writeADCI2CByte(R0x02_address, 0b01110000);
 
     // Wait for LDO to stablize
     sleep_ms(300);
@@ -323,6 +328,39 @@ int32_t averageADC(uint8_t samples) {
         tally += readADC();
     }
     return tally / samples;
+}
+
+int32_t averageADCTopAndTail() {
+    const uint8_t sampleCount = 4;
+    int32_t samples[sampleCount];
+    for (int i = 0; i < sampleCount; i++) {
+        samples[i]= readADC();
+    }
+
+    uint8_t minIndex;
+    uint8_t maxIndex;
+    int32_t min = INT32_MAX;
+    int32_t max = INT32_MIN;
+    for (int i = 0; i < sampleCount; i++) {
+        const int32_t sample = samples[i];
+        if (sample < min) {
+            min = sample;
+            minIndex = i;
+        }
+        if(sample > max) {
+            max = sample;
+            maxIndex = i;
+        }
+    }
+
+    int32_t tally = 0;
+    for (int i = 0; i < sampleCount; i++) {
+        if (i != minIndex && i != maxIndex) {
+            tally += samples[i];
+        }
+    }
+
+    return tally / (sampleCount - 2);
 }
 
 static void writeDataBuffer() {
@@ -486,7 +524,8 @@ int main() {
     calibrateADC();
     flushADC();
     sleep_ms(300);
-    int32_t zeroScaleReading = averageADC(1);
+    const int averagingCount = 64;
+    const int32_t zeroScaleReading = averageADC(averagingCount);
 
     // selectADCChannel(1);
     // setADCGain64();
@@ -494,7 +533,7 @@ int main() {
     // checkPGACAP();
     // flushADC();
     // sleep_ms(300);
-    // int32_t zeroTemperatureReading = averageADC(16);
+    // int32_t zeroTemperatureReading = averageADC(averagingCount);
 
     setOverflow();
     writeDataBuffer();
@@ -503,7 +542,7 @@ int main() {
 
     printf("Starting.\n");
 
-    int sampleCount = 2000;
+    const int sampleCount = 2000;
     int32_t samples[sampleCount];
     absolute_time_t startTime = get_absolute_time();
 
@@ -514,8 +553,8 @@ int main() {
         // calibrateADC();
         // sleep_ms(300);
         // flushADC();
-        samples[i] = averageADC(1);
-        // double scaleReading = averageADC(1);
+        samples[i] = averageADC(averagingCount);
+        // double scaleReading = averageADC(averagingCount);
 
         // double mass = (double)(scaleReading - zeroScaleReading) / 408.0;
 
@@ -526,7 +565,7 @@ int main() {
         // flushADC();
         // sleep_ms(300);
         // checkPGACAP();
-        // double temperatureReading = averageADC(16);
+        // double temperatureReading = averageADC(averagingCount);
 
         // printf("%.3f, %.3f\n", mass /*, temperatureReading - zeroTemperatureReading*/);
 
