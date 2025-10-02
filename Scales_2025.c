@@ -8,7 +8,7 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
-#define ADC_DELAY_uS 3125
+#define ADC_DELAY_uS 100000
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
@@ -303,7 +303,7 @@ static void initADC() {
     // 010 = 40SPS
     // 001 = 20SPS
     // 000 = 10SPS
-    writeADCI2CByte(R0x02_address, 0b01110000);
+    writeADCI2CByte(R0x02_address, 0b00000000);
 
     // Wait for LDO to stablize
     sleep_ms(300);
@@ -524,7 +524,7 @@ int main() {
     calibrateADC();
     flushADC();
     sleep_ms(300);
-    const int averagingCount = 64;
+    const int averagingCount = 3;
     const int32_t zeroScaleReading = averageADC(averagingCount);
 
     // selectADCChannel(1);
@@ -579,12 +579,12 @@ int main() {
     uint32_t startMillis = to_ms_since_boot(startTime);
     uint32_t endMillis = to_ms_since_boot(endTime);
 
+    printf("Done. Took %.1fs\n\n", (float)(endMillis - startMillis) / 1000.0);
+
     for (int i = 0; i < sampleCount; i++) {
         double mass = (double)(samples[i] - zeroScaleReading) / 408.0;
         printf("%.3f\n", mass);
     }
-
-    printf("Done. Took %.1fs\n", (float)(endMillis - startMillis) / 1000.0);
 
     // while (true) {
     //     LEDBlink(4);
