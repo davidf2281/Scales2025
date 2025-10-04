@@ -1,4 +1,4 @@
-#pragma GCC optimize ("O0")
+#pragma GCC optimize("O0")
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,7 +10,12 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
-#define ADC_DELAY_uS 100000
+#define ADC_DELAY_uS 100000 // 10 s/s
+// #define ADC_DELAY_uS 50000 // 20 s/s
+// #define ADC_DELAY_uS 25000 // 40 s/s
+// #define ADC_DELAY_uS 12500 // 80 s/s
+// #define ADC_DELAY_uS 3125 // 320 s/s
+
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
@@ -324,11 +329,22 @@ static void initADC() {
     }
 }
 
-int32_t averageADC(uint8_t samples) {
+int32_t averageADC(uint16_t samples, int32_t *peakToPeak) {
     int32_t tally = 0;
+    int32_t min = INT32_MAX;
+    int32_t max = INT32_MIN;
     for (int i = 0; i < samples; i++) {
-        tally += readADC();
+        int32_t reading = readADC();
+        tally += reading;
+        if (reading < min) {
+            min = reading;
+        }
+        if (reading > max) {
+            max = reading;
+        }
     }
+
+    *peakToPeak = abs(max - min);
     return tally / samples;
 }
 
@@ -383,8 +399,6 @@ static bool initialize() {
     initGPIO();
     initI2C();
     initDisplay();
-    setOverflow();
-    writeDataBuffer();
     initADC();
 }
 
@@ -482,14 +496,14 @@ static int truncateToIntWithRounding(double value) {
     const int temp = (int)(value * 10);
 
     if (nthDigit(1, temp) > 4) {
-        return (int)(value) + 1; //
+        return (int)(value) + 1;  //
     }
 
     return (int)value;
 }
 
 // Maximum sleep_ms is just over a minute, so
-// this function allows larger sleep times
+// this function allows longer sleep times
 static void sleep_minutes(uint32_t minutes) {
     for (int i = 0; i < minutes; i++) {
         sleep_ms(60000);
@@ -503,13 +517,13 @@ static void setDouble(double value) {
     }
 
     if (value >= 0) {
-        if (value < 10) { // Results in display of, eg, 1.032
+        if (value < 10) {  // Results in display of, eg, 1.032
             setInteger(truncateToIntWithRounding(value * 1000));
             setDecimalPoint(0);
-        } else if (value < 100) { // Results in display of, eg, 10.32
+        } else if (value < 100) {  // Results in display of, eg, 10.32
             setInteger(truncateToIntWithRounding(value * 100));
             setDecimalPoint(1);
-        } else if (value < 1000) { // Results in display of, eg, 103.2
+        } else if (value < 1000) {  // Results in display of, eg, 103.2
             setInteger(truncateToIntWithRounding(value * 10));
             setDecimalPoint(2);
         } else if (value >= 1000) {  // Results in display of, eg, 1032
@@ -539,21 +553,59 @@ static void checkPGACAP() {
     }
 }
 
+int startUpDisplayFlourish() {
+    const uint32_t sleep_delay = 50;
+
+    for (int i = 0; i < 4; i++) {
+        *addrDigit0 = digitPatternDash;
+        *addrDigit1 = digitPatternOff;
+        *addrDigit2 = digitPatternOff;
+        *addrDigit3 = digitPatternOff;
+        writeDataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDigit0 = digitPatternOff;
+        *addrDigit1 = digitPatternDash;
+        *addrDigit2 = digitPatternOff;
+        *addrDigit3 = digitPatternOff;
+        writeDataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDigit0 = digitPatternOff;
+        *addrDigit1 = digitPatternOff;
+        *addrDigit2 = digitPatternDash;
+        *addrDigit3 = digitPatternOff;
+        writeDataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDigit0 = digitPatternOff;
+        *addrDigit1 = digitPatternOff;
+        *addrDigit2 = digitPatternOff;
+        *addrDigit3 = digitPatternDash;
+
+        writeDataBuffer();
+        sleep_ms(sleep_delay);
+    }
+
+    *addrDigit0 = digitPatternOff;
+    *addrDigit1 = digitPatternOff;
+    *addrDigit2 = digitPatternOff;
+    *addrDigit3 = digitPatternOff;
+
+    writeDataBuffer();
+}
+
 int main() {
     initialize();
 
     LEDBlink(2);
 
-    setDouble(-0.009); // 00.01
-    writeDataBuffer();
-    sleep_ms(1001);
+    // TODO: Fix the 00.01 bug
+    // setDouble(-0.009); // 00.01
+    // writeDataBuffer();
+    // sleep_ms(1001);
 
-      setDouble(-0.09); // -0.09
-    writeDataBuffer();
-    sleep_ms(1000);
-
-    setOverflow();
-    writeDataBuffer();
+    startUpDisplayFlourish();
 
     selectADCChannel(0);
     setADCGain128();
@@ -561,79 +613,68 @@ int main() {
     flushADC();
     sleep_ms(300);
 
-    const int32_t zeroScaleReading = averageADC(32);
+    const int32_t zeroScaleReading = averageADC(32, 0);
 
-    const int averagingCount = 1;
+    const int averagingCount = 10;
     const int lpFilterCount = 15;
-    const int sampleCount = 1200;
-
-    // selectADCChannel(1);
-    // setADCGain64();
-    // calibrateADC();
-    // checkPGACAP();
-    // flushADC();
-    // sleep_ms(300);
-    // int32_t zeroTemperatureReading = averageADC(averagingCount);
-
-    // sleep_ms(10000);
+    const int sampleCount = 60;
 
     printf("Starting.\n");
 
     double samples[sampleCount];
     double lpSamples[lpFilterCount];
+    int32_t peakToPeakResults[sampleCount];
 
     const absolute_time_t startTime = get_absolute_time();
 
-    while (true) {
-        // for (int i = 0; i < sampleCount; i++) {
-        // Scale reading
-        // selectADCChannel(0);
-        // setADCGain128();
-        // calibrateADC();
-        // sleep_ms(300);
-        // flushADC();
+    // while (true) {
+    for (int i = 0; i < sampleCount; i++) {
+
+        int32_t peakToPeakResult = 0;
+        const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
+        peakToPeakResults[i] = peakToPeakResult;
+        const double mass = (double)(adcReading - zeroScaleReading) / 408.0;
 
         for (int j = lpFilterCount - 1; j > 0; j--) {
             lpSamples[j] = lpSamples[j - 1];
         }
-
-        lpSamples[0] = (double)(averageADC(averagingCount) - zeroScaleReading) / 408.0;
+        lpSamples[0] = mass;
 
         double lpFilteredReading = 0;
         for (int k = 0; k < lpFilterCount; k++) {
             lpFilteredReading += (lpSamples[k] / lpFilterCount);
         }
 
-        // samples[i] = lpFilteredReading;
+        samples[i] = mass;
 
         setDouble(lpFilteredReading);
         writeDataBuffer();
-        // double scaleReading = averageADC(averagingCount);
-
-        // double mass = (double)(scaleReading - zeroScaleReading) / 408.0;
-
-        // Temperature reading
-        // selectADCChannel(1);
-        // setADCGain64();
-        // calibrateADC();
-        // flushADC();
-        // sleep_ms(300);
-        // checkPGACAP();
-        // double temperatureReading = averageADC(averagingCount);
-
-        // printf("%.3f, %.3f\n", mass /*, temperatureReading - zeroTemperatureReading*/);
-
-        // double temperature = getTemperature(&calibData);
-        // double tempDiff = temperature - initialTemperature;
-        // printf("%.3f, %.3f, %.3f\n", mass, tempDiff, temperature);
-        // sleep_ms(500);
     }
+
+    // Measurements done.
 
     const absolute_time_t endTime = get_absolute_time();
     const uint32_t startMillis = to_ms_since_boot(startTime);
     const uint32_t endMillis = to_ms_since_boot(endTime);
 
     printf("Done. Took %.1fs\n\n", (float)(endMillis - startMillis) / 1000.0);
+
+    int64_t peakToPeakTally = 0;
+    int32_t peakToPeakMax = INT32_MIN;
+    
+    for (int i = 0; i < sampleCount; i++) {
+        int32_t peakToPeakResult = peakToPeakResults[i];
+        peakToPeakTally += peakToPeakResult;
+        if (peakToPeakResult > peakToPeakMax) {
+            peakToPeakMax = peakToPeakResult;
+        }
+    }
+    int32_t peakToPeakAverage = (int32_t)(peakToPeakTally / sampleCount);
+
+    printf("Peak to peak average: %i, max: %i\n", peakToPeakAverage, peakToPeakMax);
+
+    setInteger(peakToPeakAverage);
+    writeDataBuffer();
 
     for (int i = 0; i < sampleCount; i++) {
         printf("%.3f\n", samples[i]);
