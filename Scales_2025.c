@@ -1,3 +1,5 @@
+#pragma GCC optimize ("O0")
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -334,7 +336,7 @@ int32_t averageADCTopAndTail() {
     const uint8_t sampleCount = 4;
     int32_t samples[sampleCount];
     for (int i = 0; i < sampleCount; i++) {
-        samples[i]= readADC();
+        samples[i] = readADC();
     }
 
     uint8_t minIndex;
@@ -347,7 +349,7 @@ int32_t averageADCTopAndTail() {
             min = sample;
             minIndex = i;
         }
-        if(sample > max) {
+        if (sample > max) {
             max = sample;
             maxIndex = i;
         }
@@ -389,7 +391,11 @@ static bool initialize() {
 // Retrieves nth digit starting from the right and moving left, eg:
 // nthDigit(1, 5678) will return 8.
 // nthDigit(4, 5678) will return 5.
-static int nthDigit(const int n, const int value) {
+static int nthDigit(const int n, int value) {
+    if (value < 0) {
+        value *= -1;
+    }
+
     // Calculate 10^(n-1)
     int tenthPower = 1;
     for (int i = 0; i < n - 1; i++) {
@@ -459,17 +465,24 @@ static void setDecimalPoint(int position) {
 }
 
 static void setInteger(int value) {
-    *addrDigit0 = patternForDigit(nthDigit(4, value));
-    *addrDigit1 = patternForDigit(nthDigit(3, value));
-    *addrDigit2 = patternForDigit(nthDigit(2, value));
-    *addrDigit3 = patternForDigit(nthDigit(1, value));
+    if (value >= 0) {
+        *addrDigit0 = patternForDigit(nthDigit(4, value));
+        *addrDigit1 = patternForDigit(nthDigit(3, value));
+        *addrDigit2 = patternForDigit(nthDigit(2, value));
+        *addrDigit3 = patternForDigit(nthDigit(1, value));
+    } else {
+        *addrDigit0 = digitPatternDash;
+        *addrDigit1 = patternForDigit(nthDigit(3, value));
+        *addrDigit2 = patternForDigit(nthDigit(2, value));
+        *addrDigit3 = patternForDigit(nthDigit(1, value));
+    }
 }
 
 static int truncateToIntWithRounding(double value) {
     const int temp = (int)(value * 10);
 
     if (nthDigit(1, temp) > 4) {
-        return (int)(value) + 1;
+        return (int)(value) + 1; //
     }
 
     return (int)value;
@@ -484,25 +497,37 @@ static void sleep_minutes(uint32_t minutes) {
 }
 
 static void setDouble(double value) {
-    if (value >= 10000) {
+    if ((value >= 10000) || (value <= -1000)) {
         setOverflow();
         return;
     }
 
-    // TODO: Handle negative values by setting first digit "-" and reducing to three-digit precision
-
-    if (value < 10) {
-        setInteger(truncateToIntWithRounding(value * 1000));
-        setDecimalPoint(0);
-    } else if (value < 100) {
-        setInteger(truncateToIntWithRounding(value * 100));
-        setDecimalPoint(1);
-    } else if (value < 1000) {
-        setInteger(truncateToIntWithRounding(value * 10));
-        setDecimalPoint(2);
-    } else if (value >= 1000) {
-        setInteger(truncateToIntWithRounding(value));
-        clearDecimalPoint();
+    if (value >= 0) {
+        if (value < 10) { // Results in display of, eg, 1.032
+            setInteger(truncateToIntWithRounding(value * 1000));
+            setDecimalPoint(0);
+        } else if (value < 100) { // Results in display of, eg, 10.32
+            setInteger(truncateToIntWithRounding(value * 100));
+            setDecimalPoint(1);
+        } else if (value < 1000) { // Results in display of, eg, 103.2
+            setInteger(truncateToIntWithRounding(value * 10));
+            setDecimalPoint(2);
+        } else if (value >= 1000) {  // Results in display of, eg, 1032
+            setInteger(truncateToIntWithRounding(value));
+            clearDecimalPoint();
+        }
+    } else {
+        // Negative numbers
+        if (value > -10) {
+            setInteger(truncateToIntWithRounding(value * 100));
+            setDecimalPoint(1);
+        } else if (value > -100) {
+            setInteger(truncateToIntWithRounding(value * 10));
+            setDecimalPoint(2);
+        } else if (value > -1000) {
+            setInteger(truncateToIntWithRounding(value));
+            clearDecimalPoint();
+        }
     }
 }
 
@@ -519,13 +544,28 @@ int main() {
 
     LEDBlink(2);
 
+    setDouble(-0.009); // 00.01
+    writeDataBuffer();
+    sleep_ms(1001);
+
+      setDouble(-0.09); // -0.09
+    writeDataBuffer();
+    sleep_ms(1000);
+
+    setOverflow();
+    writeDataBuffer();
+
     selectADCChannel(0);
     setADCGain128();
     calibrateADC();
     flushADC();
     sleep_ms(300);
-    const int averagingCount = 3;
-    const int32_t zeroScaleReading = averageADC(averagingCount);
+
+    const int32_t zeroScaleReading = averageADC(32);
+
+    const int averagingCount = 1;
+    const int lpFilterCount = 15;
+    const int sampleCount = 1200;
 
     // selectADCChannel(1);
     // setADCGain64();
@@ -535,25 +575,39 @@ int main() {
     // sleep_ms(300);
     // int32_t zeroTemperatureReading = averageADC(averagingCount);
 
-    setOverflow();
-    writeDataBuffer();
-    
-    sleep_ms(10000);
+    // sleep_ms(10000);
 
     printf("Starting.\n");
 
-    const int sampleCount = 2000;
-    int32_t samples[sampleCount];
-    absolute_time_t startTime = get_absolute_time();
+    double samples[sampleCount];
+    double lpSamples[lpFilterCount];
 
-    for (int i = 0; i < sampleCount; i++) {
+    const absolute_time_t startTime = get_absolute_time();
+
+    while (true) {
+        // for (int i = 0; i < sampleCount; i++) {
         // Scale reading
         // selectADCChannel(0);
         // setADCGain128();
         // calibrateADC();
         // sleep_ms(300);
         // flushADC();
-        samples[i] = averageADC(averagingCount);
+
+        for (int j = lpFilterCount - 1; j > 0; j--) {
+            lpSamples[j] = lpSamples[j - 1];
+        }
+
+        lpSamples[0] = (double)(averageADC(averagingCount) - zeroScaleReading) / 408.0;
+
+        double lpFilteredReading = 0;
+        for (int k = 0; k < lpFilterCount; k++) {
+            lpFilteredReading += (lpSamples[k] / lpFilterCount);
+        }
+
+        // samples[i] = lpFilteredReading;
+
+        setDouble(lpFilteredReading);
+        writeDataBuffer();
         // double scaleReading = averageADC(averagingCount);
 
         // double mass = (double)(scaleReading - zeroScaleReading) / 408.0;
@@ -575,21 +629,13 @@ int main() {
         // sleep_ms(500);
     }
 
-    absolute_time_t endTime = get_absolute_time();
-    uint32_t startMillis = to_ms_since_boot(startTime);
-    uint32_t endMillis = to_ms_since_boot(endTime);
+    const absolute_time_t endTime = get_absolute_time();
+    const uint32_t startMillis = to_ms_since_boot(startTime);
+    const uint32_t endMillis = to_ms_since_boot(endTime);
 
     printf("Done. Took %.1fs\n\n", (float)(endMillis - startMillis) / 1000.0);
 
     for (int i = 0; i < sampleCount; i++) {
-        double mass = (double)(samples[i] - zeroScaleReading) / 408.0;
-        printf("%.3f\n", mass);
+        printf("%.3f\n", samples[i]);
     }
-
-    // while (true) {
-    //     LEDBlink(4);
-    //     sleep_ms(1000);
-    // }
-
-    // printf("Done.\n");
 }
