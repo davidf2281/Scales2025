@@ -10,12 +10,9 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
-#define ADC_DELAY_uS 100000 // 10 s/s
-// #define ADC_DELAY_uS 50000 // 20 s/s
-// #define ADC_DELAY_uS 25000 // 40 s/s
-// #define ADC_DELAY_uS 12500 // 80 s/s
-// #define ADC_DELAY_uS 3125 // 320 s/s
-
+// The GPIO SDK refers to logical GPIO pins, not physical pins,
+// GPIO 'pin' 6 is physical pin 9 on the Pico itself.
+#define DRDY_PIN 6
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
@@ -76,17 +73,13 @@ const uint8_t deviceRowIntSet = 0b10100000;
 const uint8_t deviceDimmingSet = 0b11101111;    // Full brightness
 const uint8_t deviceDisplayOnSet = 0b10000001;  // Device ON, blinking OFF.
 
-uint8_t dataWriteBuffer[17];
+uint8_t displayDataBuffer[17];  // TODO: See if we can de-globalise this
 
-uint8_t *const addrDigit0 = dataWriteBuffer + 1;
-uint8_t *const addrDigit1 = dataWriteBuffer + 3;
-uint8_t *const addrDigit2 = dataWriteBuffer + 7;
-uint8_t *const addrDigit3 = dataWriteBuffer + 9;
-uint8_t *const addrColon = dataWriteBuffer + 5;
-
-// I2C constants
-const uint CLOCK_PIN = 14;
-const uint DATA_PIN = 15;
+uint8_t *const addrDigit0 = displayDataBuffer + 1;
+uint8_t *const addrDigit1 = displayDataBuffer + 3;
+uint8_t *const addrDigit2 = displayDataBuffer + 7;
+uint8_t *const addrDigit3 = displayDataBuffer + 9;
+uint8_t *const addrColon = displayDataBuffer + 5;
 
 static int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
@@ -125,22 +118,18 @@ static void initI2C() {
 }
 
 static void initGPIO() {
-    gpio_init(CLOCK_PIN);
-    gpio_set_dir(CLOCK_PIN, GPIO_OUT);
-    gpio_put(CLOCK_PIN, 0);
-
-    gpio_init(DATA_PIN);
-    gpio_set_dir(DATA_PIN, GPIO_IN);
+    gpio_init(DRDY_PIN);
+    gpio_set_dir(DRDY_PIN, GPIO_IN);
 }
 
 static void initDisplay() {
-    dataWriteBuffer[0] = deviceDisplayAddressPointer;
+    displayDataBuffer[0] = deviceDisplayAddressPointer;
 
     i2c_write_blocking(i2c_default, displayI2CAddress, &deviceClockEnable, 1, false);
     i2c_write_blocking(i2c_default, displayI2CAddress, &deviceRowIntSet, 1, false);
     i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDimmingSet, 1, false);
     i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
-    i2c_write_blocking(i2c_default, displayI2CAddress, dataWriteBuffer, 17, false);
+    i2c_write_blocking(i2c_default, displayI2CAddress, displayDataBuffer, 17, false);
     i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
 }
 
@@ -240,9 +229,9 @@ static bool calibrateADC() {
 }
 
 static int32_t readADC() {
-    // while (!(readADCI2CByte(R0x00_address) & R0x00_CR_Bit)) {
-    sleep_us(ADC_DELAY_uS);
-    // }
+    while (!gpio_get(DRDY_PIN)) {
+        sleep_us(1);
+    }
 
     // Read the three ADC bytes
     uint8_t reading[3];
@@ -288,14 +277,30 @@ static void initADC() {
     // writeADCI2CByte(R0x1C_address, 0);
 
     /*
-        Set device LDO output voltage and analogue input gain:
-            Bits 5 to 3 of register 0x01 select LDO voltage. 100 == 3.3V
-            Bits 2 to 0 of register 0x01 select device gain. 111 == 128x
+        Set device LDO output voltage and analogue input gain.
+
+            Bits 5 to 3 of register 0x01 select LDO voltage.
+            111 == 2.4V
+            110 == 2.7V
+            101 == 3.0V
+            100 == 3.3V
+            011 == 3.6
+            010 == 3.9V
+            001 == 4.2V
+            000 == 4.5V
+
+            Bits 2 to 0 of register 0x01 select device gain.
+            111 == 128x
+            110 == 64x
+            101 == 32x
+            100 == 16x
+            011 == 8x
+            010 == 4x
+            001 == 2x
+            000 == 1x
     */
-    const uint8_t LDOVoltageMask = 0b00100000;
-    const uint8_t gainSelectMask = 0b00000111;
+    const uint8_t LDOVoltageMask = 0b00001000;
     writeADCI2CByte(R0x01_address, LDOVoltageMask);
-    // writeADCI2CByte(R0x01_address, LDOVoltageMask);
     setADCGain128();
 
     // Ensure LDO mode bit is zero
@@ -381,8 +386,8 @@ int32_t averageADCTopAndTail() {
     return tally / (sampleCount - 2);
 }
 
-static void writeDataBuffer() {
-    i2c_write_blocking(i2c_default, displayI2CAddress, dataWriteBuffer, 17, false);
+static void writeDisplayDataBuffer() {
+    i2c_write_blocking(i2c_default, displayI2CAddress, displayDataBuffer, 17, false);
 }
 
 static void setOverflow() {
@@ -402,7 +407,7 @@ static bool initialize() {
     initADC();
 }
 
-// Retrieves nth digit starting from the right and moving left, eg:
+// Retrieves nth digit from the right, eg:
 // nthDigit(1, 5678) will return 8.
 // nthDigit(4, 5678) will return 5.
 static int nthDigit(const int n, int value) {
@@ -545,14 +550,6 @@ static void setDouble(double value) {
     }
 }
 
-static void checkPGACAP() {
-    if ((readADCI2CByte(R0x1C_address) & R0x1C_CAP_ENABLE) == R0x1C_CAP_ENABLE) {
-        printf("PGA cap is enabled\n");
-    } else {
-        printf("PGA cap is disabled\n");
-    }
-}
-
 int startUpDisplayFlourish() {
     const uint32_t sleep_delay = 50;
 
@@ -561,21 +558,21 @@ int startUpDisplayFlourish() {
         *addrDigit1 = digitPatternOff;
         *addrDigit2 = digitPatternOff;
         *addrDigit3 = digitPatternOff;
-        writeDataBuffer();
+        writeDisplayDataBuffer();
         sleep_ms(sleep_delay);
 
         *addrDigit0 = digitPatternOff;
         *addrDigit1 = digitPatternDash;
         *addrDigit2 = digitPatternOff;
         *addrDigit3 = digitPatternOff;
-        writeDataBuffer();
+        writeDisplayDataBuffer();
         sleep_ms(sleep_delay);
 
         *addrDigit0 = digitPatternOff;
         *addrDigit1 = digitPatternOff;
         *addrDigit2 = digitPatternDash;
         *addrDigit3 = digitPatternOff;
-        writeDataBuffer();
+        writeDisplayDataBuffer();
         sleep_ms(sleep_delay);
 
         *addrDigit0 = digitPatternOff;
@@ -583,7 +580,7 @@ int startUpDisplayFlourish() {
         *addrDigit2 = digitPatternOff;
         *addrDigit3 = digitPatternDash;
 
-        writeDataBuffer();
+        writeDisplayDataBuffer();
         sleep_ms(sleep_delay);
     }
 
@@ -592,7 +589,7 @@ int startUpDisplayFlourish() {
     *addrDigit2 = digitPatternOff;
     *addrDigit3 = digitPatternOff;
 
-    writeDataBuffer();
+    writeDisplayDataBuffer();
 }
 
 int main() {
@@ -600,9 +597,9 @@ int main() {
 
     LEDBlink(2);
 
-    // TODO: Fix the 00.01 bug
-    // setDouble(-0.009); // 00.01
-    // writeDataBuffer();
+    // TODO: Fix the '00.01' bug
+    // setDouble(-0.009); // Incorrectly shows 00.01 on display
+    // writeDisplayDataBuffer();
     // sleep_ms(1001);
 
     startUpDisplayFlourish();
@@ -613,27 +610,27 @@ int main() {
     flushADC();
     sleep_ms(300);
 
-    const int32_t zeroScaleReading = averageADC(32, 0);
+    const int averagingCount = 1;
+    const int lpFilterCount = 10;
+    const int sampleCount = 600;
 
-    const int averagingCount = 10;
-    const int lpFilterCount = 15;
-    const int sampleCount = 60;
-
-    printf("Starting.\n");
-
-    double samples[sampleCount];
+    double massReadings[sampleCount];
     double lpSamples[lpFilterCount];
     int32_t peakToPeakResults[sampleCount];
 
+    const int32_t zeroScaleReading = averageADC(10, 0);
+
+    printf("Starting.\n");
+
     const absolute_time_t startTime = get_absolute_time();
 
-    // while (true) {
-    for (int i = 0; i < sampleCount; i++) {
+    while (true) {
+        // for (int i = 0; i < sampleCount; i++) {
 
         int32_t peakToPeakResult = 0;
         const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
-        peakToPeakResults[i] = peakToPeakResult;
-        const double mass = (double)(adcReading - zeroScaleReading) / 408.0;
+        // peakToPeakResults[i] = peakToPeakResult;
+        const double mass = (double)(adcReading - zeroScaleReading) / 420.0;
 
         for (int j = lpFilterCount - 1; j > 0; j--) {
             lpSamples[j] = lpSamples[j - 1];
@@ -645,10 +642,11 @@ int main() {
             lpFilteredReading += (lpSamples[k] / lpFilterCount);
         }
 
-        samples[i] = mass;
+        // massReadings[i] = mass;
 
-        setDouble(lpFilteredReading);
-        writeDataBuffer();
+        // When close to zero, clamp display reading to zeroo
+        setDouble(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading);
+        writeDisplayDataBuffer();
     }
 
     // Measurements done.
@@ -657,11 +655,16 @@ int main() {
     const uint32_t startMillis = to_ms_since_boot(startTime);
     const uint32_t endMillis = to_ms_since_boot(endTime);
 
-    printf("Done. Took %.1fs\n\n", (float)(endMillis - startMillis) / 1000.0);
+    double timeSeconds = (double)(endMillis - startMillis) / 1000.0;
+
+    printf("Done. Took %.1fs\n\n", timeSeconds);
+
+    setDouble(timeSeconds);
+    writeDisplayDataBuffer();
 
     int64_t peakToPeakTally = 0;
     int32_t peakToPeakMax = INT32_MIN;
-    
+
     for (int i = 0; i < sampleCount; i++) {
         int32_t peakToPeakResult = peakToPeakResults[i];
         peakToPeakTally += peakToPeakResult;
@@ -673,10 +676,10 @@ int main() {
 
     printf("Peak to peak average: %i, max: %i\n", peakToPeakAverage, peakToPeakMax);
 
-    setInteger(peakToPeakAverage);
-    writeDataBuffer();
+    // setInteger(peakToPeakAverage);
+    // writeDisplayDataBuffer();
 
     for (int i = 0; i < sampleCount; i++) {
-        printf("%.3f\n", samples[i]);
+        printf("%.3f\n", massReadings[i]);
     }
 }
