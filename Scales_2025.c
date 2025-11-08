@@ -16,6 +16,7 @@
 #define DRDY_PIN 6
 #define PS_PIN 23 // Controls voltage regulator. Set high to force PWM mode which reduces supply ripple (at the expense of lower efficiency)
 #define VSYS_INPUT_PIN 29
+#define TARE_PIN 22
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
@@ -120,9 +121,20 @@ static void initI2C() {
     gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
 }
 
+static void tare_pin_callback(uint gpio, uint32_t events) {
+    LEDBlink(1);
+}
+
 static void initGPIO() {
     gpio_init(DRDY_PIN);
     gpio_set_dir(DRDY_PIN, GPIO_IN);
+
+    gpio_init(TARE_PIN);
+    gpio_set_dir(TARE_PIN, GPIO_IN);
+    gpio_pull_up(TARE_PIN);
+    gpio_set_irq_enabled(TARE_PIN, GPIO_IRQ_EDGE_RISE, true);
+    gpio_set_irq_callback(&tare_pin_callback);
+    irq_set_enabled(IO_IRQ_BANK0, true);
 
     // TODO: Next: hook up the scope and look at ripple, then peak-to-peak noise, then VSYS reading without, then with PS set HIGH. 
     // gpio_init(PS_PIN);
@@ -650,7 +662,7 @@ int main() {
     double lpSamples[lpFilterCount];
     int32_t peakToPeakResults[sampleCount];
 
-    const int32_t zeroScaleReading = averageADC(10, 0);
+    const int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, 0);
 
     // sleep_ms(10000);
     // printf("Starting.\n");
