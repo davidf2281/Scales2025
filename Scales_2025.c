@@ -1,4 +1,4 @@
-#pragma GCC optimize("O0")
+// #pragma GCC optimize("O0")
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +14,8 @@
 // The GPIO SDK refers to logical GPIO pins, not physical pins,
 // GPIO 'pin' 6 is physical pin 9 on the Pico itself.
 #define DRDY_PIN 6
-#define VREG_INPUT_PIN 29
+#define PS_PIN 23 // Controls voltage regulator. Set high to force PWM mode which reduces supply ripple (at the expense of lower efficiency)
+#define VSYS_INPUT_PIN 29
 
 const int displayI2CAddress = 0x70;
 const int ADCI2CAddress = 0x2A;
@@ -122,21 +123,25 @@ static void initI2C() {
 static void initGPIO() {
     gpio_init(DRDY_PIN);
     gpio_set_dir(DRDY_PIN, GPIO_IN);
+
+    // TODO: Next: hook up the scope and look at ripple, then peak-to-peak noise, then VSYS reading without, then with PS set HIGH. 
+    // gpio_init(PS_PIN);
+    // gpio_set_dir(PS_PIN, GPIO_OUT);
+    // gpio_put(PS_PIN, 1);
 }
 
 // This is the Pico's own internal ADC used to
-// measure VREG (ie, battery voltage), not
-// our main NAU7802 ADC used to measure
-// the load cell
+// measure VSYS (ie, battery voltage), not
+// the main ADC used to measure the load cell
 static void initPicoADC() {
     adc_init();
-    adc_gpio_init(VREG_INPUT_PIN);
+    adc_gpio_init(VSYS_INPUT_PIN);
 
     // Select ADC input 3 (GPIO29)
     adc_select_input(3);
 }
 
-static float getVREG_volts() {
+static float getVSYS_volts() {
     const float conversion_factor = 3.3f / (1 << 12);
     const uint32_t sampleCount = 1024;
     uint32_t tally = 0;
@@ -619,6 +624,7 @@ int startUpDisplayFlourish() {
 }
 
 int main() {
+
     initialize();
 
     LEDBlink(2);
@@ -646,13 +652,13 @@ int main() {
 
     const int32_t zeroScaleReading = averageADC(10, 0);
 
-    sleep_ms(10000);
-    printf("Starting.\n");
+    // sleep_ms(10000);
+    // printf("Starting.\n");
 
     const absolute_time_t startTime = get_absolute_time();
 
     while (true) {
-        printf("Vreg is %.2f\n", getVREG_volts());
+        // printf("Vsys is %.2f\n", getVSYS_volts());
 
         for (int i = 0; i < sampleCount; i++) {
             int32_t peakToPeakResult = 0;
