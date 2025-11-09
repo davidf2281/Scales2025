@@ -14,11 +14,12 @@
 // The GPIO SDK refers to logical GPIO pins, not physical pins,
 // GPIO 'pin' 6 is physical pin 9 on the Pico itself.
 #define DRDY_PIN 6
-#define PS_PIN 23 // Controls voltage regulator. Set high to force PWM mode which reduces supply ripple (at the expense of lower efficiency)
+#define PS_PIN 23  // Controls voltage regulator. Set high to force PWM mode which reduces supply ripple (at the expense of lower efficiency)
 #define VSYS_INPUT_PIN 29
 #define TARE_PIN 22
 
-const int displayI2CAddress = 0x70;
+const int display0I2CAddress = 0x70;
+const int display1I2CAddress = 0x71;
 const int ADCI2CAddress = 0x2A;
 
 // ADC constants
@@ -77,13 +78,22 @@ const uint8_t deviceRowIntSet = 0b10100000;
 const uint8_t deviceDimmingSet = 0b11101111;    // Full brightness
 const uint8_t deviceDisplayOnSet = 0b10000001;  // Device ON, blinking OFF.
 
-uint8_t displayDataBuffer[17];  // TODO: See if we can de-globalise this
+uint8_t display0DataBuffer[17];  // TODO: See if we can de-globalise this
+uint8_t display1DataBuffer[17];  // TODO: See if we can de-globalise this
 
-uint8_t *const addrDigit0 = displayDataBuffer + 1;
-uint8_t *const addrDigit1 = displayDataBuffer + 3;
-uint8_t *const addrDigit2 = displayDataBuffer + 7;
-uint8_t *const addrDigit3 = displayDataBuffer + 9;
-uint8_t *const addrColon = displayDataBuffer + 5;
+uint8_t* const addrDisplay0Digit0 = display0DataBuffer + 1;
+uint8_t* const addrDisplay0Digit1 = display0DataBuffer + 3;
+uint8_t* const addrDisplay0Digit2 = display0DataBuffer + 7;
+uint8_t* const addrDisplay0Digit3 = display0DataBuffer + 9;
+uint8_t* const addrDisplay0Colon = display0DataBuffer + 5;
+
+uint8_t* const addrDisplay1Digit0 = display1DataBuffer + 1;
+uint8_t* const addrDisplay1Digit1 = display1DataBuffer + 3;
+uint8_t* const addrDisplay1Digit2 = display1DataBuffer + 7;
+uint8_t* const addrDisplay1Digit3 = display1DataBuffer + 9;
+uint8_t* const addrDisplay1Colon = display1DataBuffer + 5;
+
+static bool tarePending = false;
 
 static int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
@@ -122,7 +132,9 @@ static void initI2C() {
 }
 
 static void tare_pin_callback(uint gpio, uint32_t events) {
+    // printf("IRQ\n");
     LEDBlink(1);
+    tarePending = true;
 }
 
 static void initGPIO() {
@@ -132,14 +144,21 @@ static void initGPIO() {
     gpio_init(TARE_PIN);
     gpio_set_dir(TARE_PIN, GPIO_IN);
     gpio_pull_up(TARE_PIN);
-    gpio_set_irq_enabled(TARE_PIN, GPIO_IRQ_EDGE_RISE, true);
-    gpio_set_irq_callback(&tare_pin_callback);
-    irq_set_enabled(IO_IRQ_BANK0, true);
 
-    // TODO: Next: hook up the scope and look at ripple, then peak-to-peak noise, then VSYS reading without, then with PS set HIGH. 
+    // TODO: Next: hook up the scope and look at ripple, then peak-to-peak noise, then VSYS reading without, then with PS set HIGH.
     // gpio_init(PS_PIN);
     // gpio_set_dir(PS_PIN, GPIO_OUT);
     // gpio_put(PS_PIN, 1);
+}
+
+// This function is not called as part of general initialization
+// because we need to give the debounce capacitor time to charge,
+// hence we call it in the main loop after zeroing etc so we don't get
+// false interrupts.
+static void enableTareInterrupts() {
+    gpio_set_irq_enabled(TARE_PIN, GPIO_IRQ_EDGE_RISE, true);
+    gpio_set_irq_callback(&tare_pin_callback);
+    irq_set_enabled(IO_IRQ_BANK0, true);
 }
 
 // This is the Pico's own internal ADC used to
@@ -161,18 +180,23 @@ static float getVSYS_volts() {
         tally += (uint32_t)adc_read();
     }
 
-    return (float)(tally / sampleCount) * conversion_factor * 3; // Multiply be three because GPIO29 gives Vsys / 3
+    return (float)(tally / sampleCount) * conversion_factor * 3;  // Multiply be three because GPIO29 gives Vsys / 3
 }
 
-static void initDisplay() {
-    displayDataBuffer[0] = deviceDisplayAddressPointer;
+static void initDisplays() {
+    display0DataBuffer[0] = deviceDisplayAddressPointer;
+    i2c_write_blocking(i2c_default, display0I2CAddress, &deviceClockEnable, 1, false);
+    i2c_write_blocking(i2c_default, display0I2CAddress, &deviceRowIntSet, 1, false);
+    i2c_write_blocking(i2c_default, display0I2CAddress, &deviceDimmingSet, 1, false);
+    i2c_write_blocking(i2c_default, display0I2CAddress, display0DataBuffer, 17, false);
+    i2c_write_blocking(i2c_default, display0I2CAddress, &deviceDisplayOnSet, 1, false);
 
-    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceClockEnable, 1, false);
-    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceRowIntSet, 1, false);
-    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDimmingSet, 1, false);
-    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
-    i2c_write_blocking(i2c_default, displayI2CAddress, displayDataBuffer, 17, false);
-    i2c_write_blocking(i2c_default, displayI2CAddress, &deviceDisplayOnSet, 1, false);
+    display1DataBuffer[0] = deviceDisplayAddressPointer;
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceClockEnable, 1, false);
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceRowIntSet, 1, false);
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDimmingSet, 1, false);
+    i2c_write_blocking(i2c_default, display1I2CAddress, display1DataBuffer, 17, false);
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDisplayOnSet, 1, false);
 }
 
 static void writeADCI2CByte(uint8_t registerAddress, uint8_t data) {
@@ -206,7 +230,7 @@ static uint8_t readADCI2CByte(uint8_t registerAddress) {
     return result[0];
 }
 
-static void readADCI2CBytes(uint8_t registerAddress, uint8_t *buffer, uint8_t length) {
+static void readADCI2CBytes(uint8_t registerAddress, uint8_t* buffer, uint8_t length) {
     i2c_write_blocking(i2c_default, ADCI2CAddress, &registerAddress, 1, false);
     i2c_read_blocking(i2c_default, ADCI2CAddress, buffer, length, false);
 }
@@ -244,7 +268,7 @@ static void setADCGain32() {
 
 // Returns true if calibration successful; false otherwise
 static bool calibrateADC() {
-    // Capture initial initial register state:
+    // Capture initial register state:
     uint8_t initialRegValue = readADCI2CByte(R0x02_address);
 
     uint8_t writeBuffer[2];
@@ -315,9 +339,6 @@ static void initADC() {
     // Enable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed):
     writeADCI2CByte(R0x1C_address, R0x1C_CAP_ENABLE);
 
-    // Disable PGA output bypass capacitor (which the Adafruit NAU7802 board has installed) for two-channel operation:
-    // writeADCI2CByte(R0x1C_address, 0);
-
     /*
         Set device LDO output voltage and analogue input gain.
 
@@ -359,24 +380,11 @@ static void initADC() {
     // 000 = 10SPS
     writeADCI2CByte(R0x02_address, 0b00000000);
 
-    // Wait for LDO to stablize
+    // Wait for LDO to stabilize
     sleep_ms(300);
-
-    // Flush
-    flushADC();
-
-    // Kick off device internal calibration
-    bool calibrated = false;
-    while (!calibrated) {
-        calibrated = calibrateADC();
-        if (!calibrated) {
-            printf("Cal failed\n");
-            sleep_ms(500);
-        }
-    }
 }
 
-int32_t averageADC(uint16_t samples, int32_t *peakToPeak) {
+int32_t averageADC(uint16_t samples, int32_t* peakToPeak) {
     int32_t tally = 0;
     int32_t min = INT32_MAX;
     int32_t max = INT32_MIN;
@@ -391,7 +399,10 @@ int32_t averageADC(uint16_t samples, int32_t *peakToPeak) {
         }
     }
 
-    *peakToPeak = abs(max - min);
+    if (peakToPeak != NULL) {
+        *peakToPeak = abs(max - min);
+    }
+
     return tally / samples;
 }
 
@@ -428,15 +439,26 @@ int32_t averageADCTopAndTail() {
     return tally / (sampleCount - 2);
 }
 
-static void writeDisplayDataBuffer() {
-    i2c_write_blocking(i2c_default, displayI2CAddress, displayDataBuffer, 17, false);
+static void writeDisplay0DataBuffer() {
+    i2c_write_blocking(i2c_default, display0I2CAddress, display0DataBuffer, 17, false);
 }
 
-static void setOverflow() {
-    *addrDigit0 = digitPatternDash;
-    *addrDigit1 = digitPatternDash;
-    *addrDigit2 = digitPatternDash;
-    *addrDigit3 = digitPatternDash;
+static void writeDisplay1DataBuffer() {
+    i2c_write_blocking(i2c_default, display1I2CAddress, display1DataBuffer, 17, false);
+}
+
+static void setDisplay0Overflow() {
+    *addrDisplay0Digit0 = digitPatternDash;
+    *addrDisplay0Digit1 = digitPatternDash;
+    *addrDisplay0Digit2 = digitPatternDash;
+    *addrDisplay0Digit3 = digitPatternDash;
+}
+
+static void setDisplay1Overflow() {
+    *addrDisplay1Digit0 = digitPatternDash;
+    *addrDisplay1Digit1 = digitPatternDash;
+    *addrDisplay1Digit2 = digitPatternDash;
+    *addrDisplay1Digit3 = digitPatternDash;
 }
 
 static bool initialize() {
@@ -446,7 +468,7 @@ static bool initialize() {
     initGPIO();
     initPicoADC();
     initI2C();
-    initDisplay();
+    initDisplays();
     initADC();
 }
 
@@ -497,46 +519,89 @@ static uint8_t patternForDigit(int digit) {
     return digitPatternDash;
 }
 
-static void clearDecimalPoint() {
-    *addrDigit0 = *addrDigit0 & digitMaskDecimalPointOff;
-    *addrDigit1 = *addrDigit1 & digitMaskDecimalPointOff;
-    *addrDigit2 = *addrDigit2 & digitMaskDecimalPointOff;
-    *addrDigit3 = *addrDigit3 & digitMaskDecimalPointOff;
+static void clearDisplay0DecimalPoint() {
+    *addrDisplay0Digit0 = *addrDisplay0Digit0 & digitMaskDecimalPointOff;
+    *addrDisplay0Digit1 = *addrDisplay0Digit1 & digitMaskDecimalPointOff;
+    *addrDisplay0Digit2 = *addrDisplay0Digit2 & digitMaskDecimalPointOff;
+    *addrDisplay0Digit3 = *addrDisplay0Digit3 & digitMaskDecimalPointOff;
 }
 
-static void setDecimalPoint(int position) {
-    clearDecimalPoint();
+static void clearDisplay1DecimalPoint() {
+    *addrDisplay1Digit0 = *addrDisplay1Digit0 & digitMaskDecimalPointOff;
+    *addrDisplay1Digit1 = *addrDisplay1Digit1 & digitMaskDecimalPointOff;
+    *addrDisplay1Digit2 = *addrDisplay1Digit2 & digitMaskDecimalPointOff;
+    *addrDisplay1Digit3 = *addrDisplay1Digit3 & digitMaskDecimalPointOff;
+}
+
+static void setDisplay0DecimalPoint(int position) {
+    clearDisplay0DecimalPoint();
 
     switch (position) {
         case 0:
-            *addrDigit0 = *addrDigit0 | digitMaskDecimalPointOn;
+            *addrDisplay0Digit0 = *addrDisplay0Digit0 | digitMaskDecimalPointOn;
             return;
 
         case 1:
-            *addrDigit1 = *addrDigit1 | digitMaskDecimalPointOn;
+            *addrDisplay0Digit1 = *addrDisplay0Digit1 | digitMaskDecimalPointOn;
             return;
 
         case 2:
-            *addrDigit2 = *addrDigit2 | digitMaskDecimalPointOn;
+            *addrDisplay0Digit2 = *addrDisplay0Digit2 | digitMaskDecimalPointOn;
             return;
 
         case 3:
-            *addrDigit3 = *addrDigit3 | digitMaskDecimalPointOn;
+            *addrDisplay0Digit3 = *addrDisplay0Digit3 | digitMaskDecimalPointOn;
             return;
     }
 }
 
-static void setInteger(int value) {
+static void setDisplay1DecimalPoint(int position) {
+    clearDisplay1DecimalPoint();
+
+    switch (position) {
+        case 0:
+            *addrDisplay1Digit0 = *addrDisplay1Digit0 | digitMaskDecimalPointOn;
+            return;
+
+        case 1:
+            *addrDisplay1Digit1 = *addrDisplay1Digit1 | digitMaskDecimalPointOn;
+            return;
+
+        case 2:
+            *addrDisplay1Digit2 = *addrDisplay1Digit2 | digitMaskDecimalPointOn;
+            return;
+
+        case 3:
+            *addrDisplay1Digit3 = *addrDisplay1Digit3 | digitMaskDecimalPointOn;
+            return;
+    }
+}
+
+static void setDisplay0Integer(int value) {
     if (value >= 0) {
-        *addrDigit0 = patternForDigit(nthDigit(4, value));
-        *addrDigit1 = patternForDigit(nthDigit(3, value));
-        *addrDigit2 = patternForDigit(nthDigit(2, value));
-        *addrDigit3 = patternForDigit(nthDigit(1, value));
+        *addrDisplay0Digit0 = patternForDigit(nthDigit(4, value));
+        *addrDisplay0Digit1 = patternForDigit(nthDigit(3, value));
+        *addrDisplay0Digit2 = patternForDigit(nthDigit(2, value));
+        *addrDisplay0Digit3 = patternForDigit(nthDigit(1, value));
     } else {
-        *addrDigit0 = digitPatternDash;
-        *addrDigit1 = patternForDigit(nthDigit(3, value));
-        *addrDigit2 = patternForDigit(nthDigit(2, value));
-        *addrDigit3 = patternForDigit(nthDigit(1, value));
+        *addrDisplay0Digit0 = digitPatternDash;
+        *addrDisplay0Digit1 = patternForDigit(nthDigit(3, value));
+        *addrDisplay0Digit2 = patternForDigit(nthDigit(2, value));
+        *addrDisplay0Digit3 = patternForDigit(nthDigit(1, value));
+    }
+}
+
+static void setDisplay1Integer(int value) {
+    if (value >= 0) {
+        *addrDisplay1Digit0 = patternForDigit(nthDigit(4, value));
+        *addrDisplay1Digit1 = patternForDigit(nthDigit(3, value));
+        *addrDisplay1Digit2 = patternForDigit(nthDigit(2, value));
+        *addrDisplay1Digit3 = patternForDigit(nthDigit(1, value));
+    } else {
+        *addrDisplay1Digit0 = digitPatternDash;
+        *addrDisplay1Digit1 = patternForDigit(nthDigit(3, value));
+        *addrDisplay1Digit2 = patternForDigit(nthDigit(2, value));
+        *addrDisplay1Digit3 = patternForDigit(nthDigit(1, value));
     }
 }
 
@@ -558,37 +623,72 @@ static void sleep_minutes(uint32_t minutes) {
     }
 }
 
-static void setDouble(double value) {
+static void setDisplay0Double(double value) {
     if ((value >= 10000) || (value <= -1000)) {
-        setOverflow();
+        setDisplay0Overflow();
         return;
     }
 
     if (value >= 0) {
         if (value < 10) {  // Results in display of, eg, 1.032
-            setInteger(truncateToIntWithRounding(value * 1000));
-            setDecimalPoint(0);
+            setDisplay0Integer(truncateToIntWithRounding(value * 1000));
+            setDisplay0DecimalPoint(0);
         } else if (value < 100) {  // Results in display of, eg, 10.32
-            setInteger(truncateToIntWithRounding(value * 100));
-            setDecimalPoint(1);
+            setDisplay0Integer(truncateToIntWithRounding(value * 100));
+            setDisplay0DecimalPoint(1);
         } else if (value < 1000) {  // Results in display of, eg, 103.2
-            setInteger(truncateToIntWithRounding(value * 10));
-            setDecimalPoint(2);
+            setDisplay0Integer(truncateToIntWithRounding(value * 10));
+            setDisplay0DecimalPoint(2);
         } else if (value >= 1000) {  // Results in display of, eg, 1032
-            setInteger(truncateToIntWithRounding(value));
-            clearDecimalPoint();
+            setDisplay0Integer(truncateToIntWithRounding(value));
+            clearDisplay0DecimalPoint();
         }
     } else {
         // Negative numbers
         if (value > -10) {
-            setInteger(truncateToIntWithRounding(value * 100));
-            setDecimalPoint(1);
+            setDisplay0Integer(truncateToIntWithRounding(value * 100));
+            setDisplay0DecimalPoint(1);
         } else if (value > -100) {
-            setInteger(truncateToIntWithRounding(value * 10));
-            setDecimalPoint(2);
+            setDisplay0Integer(truncateToIntWithRounding(value * 10));
+            setDisplay0DecimalPoint(2);
         } else if (value > -1000) {
-            setInteger(truncateToIntWithRounding(value));
-            clearDecimalPoint();
+            setDisplay0Integer(truncateToIntWithRounding(value));
+            clearDisplay0DecimalPoint();
+        }
+    }
+}
+
+static void setDisplay1Double(double value) {
+    if ((value >= 10000) || (value <= -1000)) {
+        setDisplay1Overflow();
+        return;
+    }
+
+    if (value >= 0) {
+        if (value < 10) {  // Results in display of, eg, 1.032
+            setDisplay1Integer(truncateToIntWithRounding(value * 1000));
+            setDisplay1DecimalPoint(0);
+        } else if (value < 100) {  // Results in display of, eg, 10.32
+            setDisplay1Integer(truncateToIntWithRounding(value * 100));
+            setDisplay1DecimalPoint(1);
+        } else if (value < 1000) {  // Results in display of, eg, 103.2
+            setDisplay1Integer(truncateToIntWithRounding(value * 10));
+            setDisplay1DecimalPoint(2);
+        } else if (value >= 1000) {  // Results in display of, eg, 1032
+            setDisplay1Integer(truncateToIntWithRounding(value));
+            clearDisplay1DecimalPoint();
+        }
+    } else {
+        // Negative numbers
+        if (value > -10) {
+            setDisplay1Integer(truncateToIntWithRounding(value * 100));
+            setDisplay1DecimalPoint(1);
+        } else if (value > -100) {
+            setDisplay1Integer(truncateToIntWithRounding(value * 10));
+            setDisplay1DecimalPoint(2);
+        } else if (value > -1000) {
+            setDisplay1Integer(truncateToIntWithRounding(value));
+            clearDisplay1DecimalPoint();
         }
     }
 }
@@ -596,83 +696,138 @@ static void setDouble(double value) {
 int startUpDisplayFlourish() {
     const uint32_t sleep_delay = 50;
 
-    for (int i = 0; i < 4; i++) {
-        *addrDigit0 = digitPatternDash;
-        *addrDigit1 = digitPatternOff;
-        *addrDigit2 = digitPatternOff;
-        *addrDigit3 = digitPatternOff;
-        writeDisplayDataBuffer();
+    for (int i = 0; i < 3; i++) {
+        *addrDisplay0Digit0 = digitPatternDash;
+        *addrDisplay0Digit1 = digitPatternOff;
+        *addrDisplay0Digit2 = digitPatternOff;
+        *addrDisplay0Digit3 = digitPatternOff;
+        writeDisplay0DataBuffer();
         sleep_ms(sleep_delay);
 
-        *addrDigit0 = digitPatternOff;
-        *addrDigit1 = digitPatternDash;
-        *addrDigit2 = digitPatternOff;
-        *addrDigit3 = digitPatternOff;
-        writeDisplayDataBuffer();
+        *addrDisplay0Digit0 = digitPatternOff;
+        *addrDisplay0Digit1 = digitPatternDash;
+        *addrDisplay0Digit2 = digitPatternOff;
+        *addrDisplay0Digit3 = digitPatternOff;
+        writeDisplay0DataBuffer();
         sleep_ms(sleep_delay);
 
-        *addrDigit0 = digitPatternOff;
-        *addrDigit1 = digitPatternOff;
-        *addrDigit2 = digitPatternDash;
-        *addrDigit3 = digitPatternOff;
-        writeDisplayDataBuffer();
+        *addrDisplay0Digit0 = digitPatternOff;
+        *addrDisplay0Digit1 = digitPatternOff;
+        *addrDisplay0Digit2 = digitPatternDash;
+        *addrDisplay0Digit3 = digitPatternOff;
+        writeDisplay0DataBuffer();
         sleep_ms(sleep_delay);
 
-        *addrDigit0 = digitPatternOff;
-        *addrDigit1 = digitPatternOff;
-        *addrDigit2 = digitPatternOff;
-        *addrDigit3 = digitPatternDash;
+        *addrDisplay0Digit0 = digitPatternOff;
+        *addrDisplay0Digit1 = digitPatternOff;
+        *addrDisplay0Digit2 = digitPatternOff;
+        *addrDisplay0Digit3 = digitPatternDash;
 
-        writeDisplayDataBuffer();
+        writeDisplay0DataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDisplay0Digit0 = digitPatternOff;
+        *addrDisplay0Digit1 = digitPatternOff;
+        *addrDisplay0Digit2 = digitPatternOff;
+        *addrDisplay0Digit3 = digitPatternOff;
+
+        writeDisplay0DataBuffer();
+        sleep_ms(sleep_delay);
+
+        ///
+        *addrDisplay1Digit0 = digitPatternDash;
+        *addrDisplay1Digit1 = digitPatternOff;
+        *addrDisplay1Digit2 = digitPatternOff;
+        *addrDisplay1Digit3 = digitPatternOff;
+        writeDisplay1DataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDisplay1Digit0 = digitPatternOff;
+        *addrDisplay1Digit1 = digitPatternDash;
+        *addrDisplay1Digit2 = digitPatternOff;
+        *addrDisplay1Digit3 = digitPatternOff;
+        writeDisplay1DataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDisplay1Digit0 = digitPatternOff;
+        *addrDisplay1Digit1 = digitPatternOff;
+        *addrDisplay1Digit2 = digitPatternDash;
+        *addrDisplay1Digit3 = digitPatternOff;
+        writeDisplay1DataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDisplay1Digit0 = digitPatternOff;
+        *addrDisplay1Digit1 = digitPatternOff;
+        *addrDisplay1Digit2 = digitPatternOff;
+        *addrDisplay1Digit3 = digitPatternDash;
+
+        writeDisplay1DataBuffer();
+        sleep_ms(sleep_delay);
+
+        *addrDisplay1Digit0 = digitPatternOff;
+        *addrDisplay1Digit1 = digitPatternOff;
+        *addrDisplay1Digit2 = digitPatternOff;
+        *addrDisplay1Digit3 = digitPatternOff;
+
+        writeDisplay1DataBuffer();
         sleep_ms(sleep_delay);
     }
-
-    *addrDigit0 = digitPatternOff;
-    *addrDigit1 = digitPatternOff;
-    *addrDigit2 = digitPatternOff;
-    *addrDigit3 = digitPatternOff;
-
-    writeDisplayDataBuffer();
 }
 
 int main() {
-
     initialize();
 
-    LEDBlink(2);
-
     // TODO: Fix the '00.01' bug
-    // setDouble(-0.009); // Incorrectly shows 00.01 on display
+    // setDisplay0Double(-0.009); // Incorrectly shows 00.01 on display
     // writeDisplayDataBuffer();
     // sleep_ms(1001);
 
-    startUpDisplayFlourish();
+    setDisplay0Overflow();
+    setDisplay1Overflow();
+    writeDisplay0DataBuffer();
+    writeDisplay1DataBuffer();
+
+    // LEDBlink(1);
 
     selectADCChannel(0);
     setADCGain128();
     calibrateADC();
     flushADC();
-    sleep_ms(300);
+    // sleep_ms(300);
 
     const int averagingCount = 1;
     const int lpFilterCount = 10;
     const int sampleCount = 600;
 
-    double massReadings[sampleCount];
+    // double massReadings[sampleCount];
     double lpSamples[lpFilterCount];
     int32_t peakToPeakResults[sampleCount];
 
-    const int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, 0);
+    int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
     // sleep_ms(10000);
     // printf("Starting.\n");
 
     const absolute_time_t startTime = get_absolute_time();
 
+    enableTareInterrupts();
+
     while (true) {
         // printf("Vsys is %.2f\n", getVSYS_volts());
+        setDisplay1Double((double)getVSYS_volts());
+        writeDisplay1DataBuffer();
 
         for (int i = 0; i < sampleCount; i++) {
+            const bool shouldTare = tarePending;  // Capture value so it can't be mutated by an interrupt mid-loop
+            tarePending = false;
+
+            if (shouldTare) {
+                setDisplay0Overflow();
+                writeDisplay0DataBuffer();
+                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
+                zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
+            }
+
             int32_t peakToPeakResult = 0;
             const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
             // peakToPeakResults[i] = peakToPeakResult;
@@ -681,7 +836,14 @@ int main() {
             for (int j = lpFilterCount - 1; j > 0; j--) {
                 lpSamples[j] = lpSamples[j - 1];
             }
-            lpSamples[0] = mass;
+
+            if (shouldTare) {
+                for (int l = 0; l < lpFilterCount; l++) {
+                    lpSamples[l] = mass;
+                }
+            } else {
+                lpSamples[0] = mass;
+            }
 
             double lpFilteredReading = 0;
             for (int k = 0; k < lpFilterCount; k++) {
@@ -691,42 +853,43 @@ int main() {
             // massReadings[i] = mass;
 
             // When close to zero, clamp display reading to zeroo
-            setDouble(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading);
-            writeDisplayDataBuffer();
+            setDisplay0Double(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading);
+            writeDisplay0DataBuffer();
         }
     }
+    /*
+        // Measurements done.
 
-    // Measurements done.
+        const absolute_time_t endTime = get_absolute_time();
+        const uint32_t startMillis = to_ms_since_boot(startTime);
+        const uint32_t endMillis = to_ms_since_boot(endTime);
 
-    const absolute_time_t endTime = get_absolute_time();
-    const uint32_t startMillis = to_ms_since_boot(startTime);
-    const uint32_t endMillis = to_ms_since_boot(endTime);
+        double timeSeconds = (double)(endMillis - startMillis) / 1000.0;
 
-    double timeSeconds = (double)(endMillis - startMillis) / 1000.0;
+        printf("Done. Took %.1fs\n\n", timeSeconds);
 
-    printf("Done. Took %.1fs\n\n", timeSeconds);
+        setDisplay0Double(timeSeconds);
+        writeDisplay0DataBuffer();
 
-    setDouble(timeSeconds);
-    writeDisplayDataBuffer();
+        int64_t peakToPeakTally = 0;
+        int32_t peakToPeakMax = INT32_MIN;
 
-    int64_t peakToPeakTally = 0;
-    int32_t peakToPeakMax = INT32_MIN;
-
-    for (int i = 0; i < sampleCount; i++) {
-        int32_t peakToPeakResult = peakToPeakResults[i];
-        peakToPeakTally += peakToPeakResult;
-        if (peakToPeakResult > peakToPeakMax) {
-            peakToPeakMax = peakToPeakResult;
+        for (int i = 0; i < sampleCount; i++) {
+            int32_t peakToPeakResult = peakToPeakResults[i];
+            peakToPeakTally += peakToPeakResult;
+            if (peakToPeakResult > peakToPeakMax) {
+                peakToPeakMax = peakToPeakResult;
+            }
         }
-    }
-    int32_t peakToPeakAverage = (int32_t)(peakToPeakTally / sampleCount);
+        int32_t peakToPeakAverage = (int32_t)(peakToPeakTally / sampleCount);
 
-    printf("Peak to peak average: %i, max: %i\n", peakToPeakAverage, peakToPeakMax);
+        printf("Peak to peak average: %i, max: %i\n", peakToPeakAverage, peakToPeakMax);
 
-    // setInteger(peakToPeakAverage);
-    // writeDisplayDataBuffer();
+        // setDisplay0Integer(peakToPeakAverage);
+        // writeDisplayDataBuffer();
 
-    for (int i = 0; i < sampleCount; i++) {
-        printf("%.3f\n", massReadings[i]);
-    }
+        for (int i = 0; i < sampleCount; i++) {
+            printf("%.3f\n", massReadings[i]);
+        }
+            */
 }
