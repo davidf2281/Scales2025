@@ -187,14 +187,14 @@ static float getVSYS_volts() {
 }
 
 static void initDisplays() {
-    display0DataBuffer[0] = deviceDisplayAddressPointer;
+    display0DataBuffer[0] = deviceDisplayAddressPointer; // This is just zero, which is the HT16K33 display-driver 'write display' command
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceClockEnable, 1, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceRowIntSet, 1, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceDimmingSet, 1, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, display0DataBuffer, 17, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceDisplayOnSet, 1, false);
 
-    display1DataBuffer[0] = deviceDisplayAddressPointer;
+    display1DataBuffer[0] = deviceDisplayAddressPointer; // This is just zero, which is the HT16K33 display-driver 'write display' command
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceClockEnable, 1, false);
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceRowIntSet, 1, false);
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDimmingSet, 1, false);
@@ -365,7 +365,7 @@ static void initADC() {
             001 == 2x
             000 == 1x
     */
-    const uint8_t LDOVoltageMask = 0b00001000;
+    const uint8_t LDOVoltageMask = 0b00010000;
     writeADCI2CByte(R0x01_address, LDOVoltageMask);
     setADCGain128();
 
