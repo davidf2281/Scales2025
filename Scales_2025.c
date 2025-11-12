@@ -365,23 +365,24 @@ static void initADC() {
             001 == 2x
             000 == 1x
     */
-    const uint8_t LDOVoltageMask = 0b00010000;
+    const uint8_t LDOVoltageMask = 0b00010000; // LDO 3.9V
     writeADCI2CByte(R0x01_address, LDOVoltageMask);
     setADCGain128();
 
     // Ensure LDO mode bit is zero
     writeADCI2CByte(R0x1B_address, 0);
 
-    // Disable ADC chopper
+    // Disable ADC chopper, as recommended in datasheet;
+    // ADC output is useless if it's left in its default enabled state.
     writeADCI2CByte(R0x15_address, 0b00110000);
 
-    // Set sample rate to 10SPS (bits 6 to 0):
+    // Set sample rate (Rx02 register bits 6 to 0):
     // 111 = 320SPS
     // 011 = 80SPS
     // 010 = 40SPS
     // 001 = 20SPS
     // 000 = 10SPS
-    writeADCI2CByte(R0x02_address, 0b00000000);
+    writeADCI2CByte(R0x02_address, 0b00000000); // 10SPS
 
     // Wait for LDO to stabilize
     sleep_ms(300);
@@ -407,39 +408,6 @@ int32_t averageADC(uint16_t samples, int32_t* peakToPeak) {
     }
 
     return tally / samples;
-}
-
-int32_t averageADCTopAndTail() {
-    const uint8_t sampleCount = 4;
-    int32_t samples[sampleCount];
-    for (int i = 0; i < sampleCount; i++) {
-        samples[i] = readADC();
-    }
-
-    uint8_t minIndex;
-    uint8_t maxIndex;
-    int32_t min = INT32_MAX;
-    int32_t max = INT32_MIN;
-    for (int i = 0; i < sampleCount; i++) {
-        const int32_t sample = samples[i];
-        if (sample < min) {
-            min = sample;
-            minIndex = i;
-        }
-        if (sample > max) {
-            max = sample;
-            maxIndex = i;
-        }
-    }
-
-    int32_t tally = 0;
-    for (int i = 0; i < sampleCount; i++) {
-        if (i != minIndex && i != maxIndex) {
-            tally += samples[i];
-        }
-    }
-
-    return tally / (sampleCount - 2);
 }
 
 static void writeDisplay0DataBuffer() {
@@ -576,6 +544,7 @@ static void sleep_minutes(uint32_t minutes) {
     }
 }
 
+// TODO: Fix the '00.01' bug: setDisplayDouble(-0.009) incorrectly shows 00.01 on display
 static void setDisplayDouble(double value, uint8_t* const* displayDigitAddresses) {
     if ((value >= 10000) || (value <= -1000)) {
         setDisplayOverflow(displayDigitAddresses);
@@ -613,11 +582,6 @@ static void setDisplayDouble(double value, uint8_t* const* displayDigitAddresses
 
 int main() {
     initialize();
-
-    // TODO: Fix the '00.01' bug
-    // setDisplay0Double(-0.009); // Incorrectly shows 00.01 on display
-    // writeDisplayDataBuffer();
-    // sleep_ms(1001);
 
     setDisplayOverflow(display0DigitAddresses);
     setDisplayOverflow(display1DigitAddresses);
