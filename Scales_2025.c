@@ -74,29 +74,35 @@ const uint8_t colonPatternOn = 0b00000010;
 const uint8_t colonPatternOff = 0b00000000;
 const uint8_t deviceDisplayAddressPointer = 0b00000000;
 const uint8_t deviceClockEnable = 0b00100001;
+const uint8_t deviceClockDisable = 0b00100000;
 const uint8_t deviceRowIntSet = 0b10100000;
 const uint8_t deviceDimmingSet = 0b11101111;    // Full brightness
 const uint8_t deviceDisplayOnSet = 0b10000001;  // Device ON, blinking OFF.
+const uint8_t deviceDisplayOffSet = 0b10000000;  // Device OFF.
 
-// enum DisplayTimerState {
-//     initial,
-//     pending,
-//     active
-// };
-
-// enum DisplayTimerState displayTimerState = initial;
+enum TimerDisplayState {
+    disabled,
+    longPressAcknowledged,
+    taring,
+    waitingForMassIncrement,
+    timing
+};
 
 enum TareSwitchState {
     open,
     closed
 };
 
+// Global vars
+enum TimerDisplayState timerDisplayState = disabled;
 enum TareSwitchState tareSwitchState = closed;
 bool tareSwitchHeld = false;
+static bool tarePending = false;
 
 uint8_t display0DataBuffer[17];  // TODO: See if we can de-globalise this
 uint8_t display1DataBuffer[17];  // TODO: See if we can de-globalise this
 
+// Global constants
 uint8_t* const display0DigitAddresses[] = {
     display0DataBuffer + 1,
     display0DataBuffer + 3,
@@ -111,8 +117,6 @@ uint8_t* const display1DigitAddresses[] = {
 
 uint8_t* const addrDisplay0Colon = display0DataBuffer + 5;
 uint8_t* const addrDisplay1Colon = display1DataBuffer + 5;
-
-static bool tarePending = false;
 
 static int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
@@ -133,19 +137,12 @@ static void LEDBlink(int repeats) {
     }
 }
 
-static void LEDBlinkLong(int repeats, int delay_ms) {
-    for (int i = 0; i < repeats; i++) {
-        pico_set_led(true);
-        sleep_ms(delay_ms);
-        pico_set_led(false);
-        sleep_ms(delay_ms);
-    }
-}
-
 static bool tareSwitchDebounceTimerCallback(__unused struct repeating_timer* t) {
     static const uint8_t debounceQueueThreshold = 0x7f;
     static uint8_t debounceQueue = 0xFF;
-    // static uint tareSwitchHoldDetector = 0;
+
+    static const uint tareSwitchHoldThreshold = 100;
+    static uint tareSwitchHoldDetector = 0;
 
     const bool tareSwitchClosed = gpio_get(TARE_PIN);
 
@@ -153,39 +150,44 @@ static bool tareSwitchDebounceTimerCallback(__unused struct repeating_timer* t) 
 
     if (debounceQueue >= debounceQueueThreshold) {
         tareSwitchState = closed;
-        debounceQueue == debounceQueueThreshold;
-        // tareSwitchHeld = false;
-        // tareSwitchHoldDetector = 0;
     } else if (debounceQueue == 0) {
         tareSwitchState = open;
     }
 
-    printf("Debounce queue %lu:\n", debounceQueue);
+    tareSwitchHoldDetector += (tareSwitchState == open ? 1 : 0);
 
-    // tareSwitchHoldDetector += tareSwitchValue;
-
-    // if (tareSwitchHoldDetector > 199) {
-    //     // tareSwitchHeld = true;
-    //     tareSwitchHoldDetector = 0;
-    // }
+    if (tareSwitchHoldDetector >= tareSwitchHoldThreshold && tareSwitchState == open) {
+        tareSwitchHoldDetector == tareSwitchHoldThreshold;
+        tareSwitchHeld = true;
+    } else if (tareSwitchState == closed) {
+        tareSwitchHoldDetector = 0;
+        tareSwitchHeld = false;
+    }
 }
 
 static void checkTareSwitchState() {
-    // static bool previousTareSwitchHeld = false;
+    static enum TareSwitchState previousTareSwitchState = open;
+    static bool previousTareSwitchHeld = false;
 
-    if (tareSwitchState == open) {
+    const enum TareSwitchState localTareSwitchState = tareSwitchState;  // Capture value
+    const bool localTareSwitchHeld = tareSwitchHeld;                    // Capture value
+
+    if (previousTareSwitchHeld == false && localTareSwitchHeld == true) {
+        // Tare switch has entered long hold
         pico_set_led(true);
-    } else {
+
+    } else if (previousTareSwitchHeld == true && localTareSwitchHeld == false) {
+        // Tare switch has been released from long hold
         pico_set_led(false);
+        tarePending = true;
+
+    } else if (localTareSwitchState == closed && previousTareSwitchState == open) {
+        // Tare switch has been momentarily pressed and released
+        tarePending = true;
     }
 
-    // if (previousTareSwitchHeld == false && tareSwitchHeld == true) {
-    //     printf("Held\n");
-    // } else if (previousTareSwitchHeld == true && tareSwitchHeld == false) {
-    //     printf("Released\n");
-    // }
-
-    // previousTareSwitchHeld = tareSwitchHeld;
+    previousTareSwitchState = localTareSwitchState;
+    previousTareSwitchHeld = localTareSwitchHeld;
 }
 
 static void initI2C() {
@@ -196,12 +198,6 @@ static void initI2C() {
     gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
 }
 
-// static void tare_pin_callback(uint gpio, uint32_t events) {
-//     // printf("IRQ\n");
-//     LEDBlink(1);
-//     tarePending = true;
-// }
-
 static void initGPIO() {
     gpio_init(DRDY_PIN);
     gpio_set_dir(DRDY_PIN, GPIO_IN);
@@ -210,21 +206,11 @@ static void initGPIO() {
     gpio_set_dir(TARE_PIN, GPIO_IN);
     gpio_pull_up(TARE_PIN);
 
-    // TODO: Next: hook up the scope and look at ripple, then peak-to-peak noise, then VSYS reading without, then with PS set HIGH.
+    // TODO: Hook up the scope and look at ripple, then peak-to-peak noise, then VSYS reading without, then with PS set HIGH.
     // gpio_init(PS_PIN);
     // gpio_set_dir(PS_PIN, GPIO_OUT);
     // gpio_put(PS_PIN, 1);
 }
-
-// This function is not called as part of general initialization
-// because we need to give the debounce capacitor time to charge,
-// hence we call it in the main loop after zeroing to avoid
-// false interrupts.
-// static void enableTareInterrupts() {
-//     gpio_set_irq_enabled(TARE_PIN, GPIO_IRQ_EDGE_FALL, true);
-//     gpio_set_irq_callback(&tare_pin_callback);
-//     irq_set_enabled(IO_IRQ_BANK0, true);
-// }
 
 // This is the Pico's own internal ADC used to
 // measure VSYS (ie, battery voltage), not
@@ -259,6 +245,16 @@ static void initDisplays() {
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceRowIntSet, 1, false);
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDimmingSet, 1, false);
     i2c_write_blocking(i2c_default, display1I2CAddress, display1DataBuffer, 17, false);
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDisplayOnSet, 1, false);
+}
+
+static void disableTimerDisplay() {
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDisplayOffSet, 1, false);
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceClockDisable, 1, false);
+}
+
+static void enableTimerDisplay() {
+    i2c_write_blocking(i2c_default, display1I2CAddress, &deviceClockEnable, 1, false);
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDisplayOnSet, 1, false);
 }
 
@@ -641,6 +637,8 @@ static void setDisplayDouble(double value, uint8_t* const* displayDigitAddresses
 int main() {
     initialize();
 
+    enum TimerDisplayState previousTimerDisplayState = disabled;
+
     setDisplayOverflow(display0DigitAddresses);
     setDisplayOverflow(display1DigitAddresses);
     writeDisplay0DataBuffer();
@@ -653,7 +651,7 @@ int main() {
 
     const int averagingCount = 1;
     const int lpFilterCount = 10;
-    const int sampleCount = 600;
+    const int sampleCount = 1;
 
     // double massReadings[sampleCount];
     double lpSamples[lpFilterCount];
@@ -666,55 +664,59 @@ int main() {
     // enableTareInterrupts();
 
     struct repeating_timer timer;  // TODO: Put this in an initializer function
-    add_repeating_timer_ms(500, tareSwitchDebounceTimerCallback, NULL, &timer);
+    add_repeating_timer_ms(10, tareSwitchDebounceTimerCallback, NULL, &timer);
+
+    disableTimerDisplay();
 
     while (true) {
         // printf("Vsys is %.2f\n", getVSYS_volts());
-        setDisplayDouble((double)getVSYS_volts(), display1DigitAddresses);
-        writeDisplay1DataBuffer();
+        // setDisplayDouble((double)getVSYS_volts(), display1DigitAddresses);
+        // writeDisplay1DataBuffer();
+        const enum TimerDisplayState localTimerDisplayState = timerDisplayState;  // Capture value
+        const bool timerDisplayStateHasChanged = (localTimerDisplayState != previousTimerDisplayState);
 
-        for (int i = 0; i < sampleCount; i++) {
-            checkTareSwitchState();
-            const bool shouldTare = tarePending;  // Capture tarePending value so it can't be mutated by an interrupt mid-loop
-            tarePending = false;
+        // TODO: Next: timerDisplayState state logic
 
-            if (shouldTare) {
-                setDisplayOverflow(display0DigitAddresses);
-                writeDisplay0DataBuffer();
-                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
-                zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
-            }
+        checkTareSwitchState();
+        const bool localTarePending = tarePending;  // Capture value
+        tarePending = false;
 
-            // int32_t peakToPeakResult = 0;
-            // const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
-            const int32_t adcReading = averageADC(averagingCount, NULL);
-            // peakToPeakResults[i] = peakToPeakResult;
-            const double mass = (double)(adcReading - zeroScaleReading) / 420.0;
-
-            for (int j = lpFilterCount - 1; j > 0; j--) {
-                lpSamples[j] = lpSamples[j - 1];
-            }
-
-            if (!shouldTare) {
-                lpSamples[0] = mass;
-            } else {
-                // Clear out & override now-invalid sample history with zeroed mass reading:
-                for (int l = 0; l < lpFilterCount; l++) {
-                    lpSamples[l] = mass;
-                }
-            }
-
-            double lpFilteredReading = 0;
-            for (int k = 0; k < lpFilterCount; k++) {
-                lpFilteredReading += (lpSamples[k] / lpFilterCount);
-            }
-
-            // massReadings[i] = mass;
-
-            // When close to zero, clamp display reading to zeroo
-            setDisplayDouble(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading, display0DigitAddresses);
+        if (localTarePending) {
+            setDisplayOverflow(display0DigitAddresses);
             writeDisplay0DataBuffer();
+            sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
+            zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
         }
+
+        // int32_t peakToPeakResult = 0;
+        // const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
+        const int32_t adcReading = averageADC(averagingCount, NULL);
+        // peakToPeakResults[i] = peakToPeakResult;
+        const double mass = (double)(adcReading - zeroScaleReading) / 420.0;
+
+        for (int j = lpFilterCount - 1; j > 0; j--) {
+            lpSamples[j] = lpSamples[j - 1];
+        }
+
+        if (!localTarePending) {
+            lpSamples[0] = mass;
+        } else {
+            // Clear out & override now-invalid sample history with zeroed mass reading:
+            for (int l = 0; l < lpFilterCount; l++) {
+                lpSamples[l] = mass;
+            }
+        }
+
+        double lpFilteredReading = 0;
+        for (int k = 0; k < lpFilterCount; k++) {
+            lpFilteredReading += (lpSamples[k] / lpFilterCount);
+        }
+
+        // massReadings[i] = mass;
+
+        // When close to zero, clamp display reading to zeroo
+        setDisplayDouble(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading, display0DigitAddresses);
+        writeDisplay0DataBuffer();
     }
     /*
         // Measurements done.
