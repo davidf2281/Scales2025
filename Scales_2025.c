@@ -37,7 +37,7 @@ const uint8_t R0x00_RR_Bit = 0b00000001;     // Register reset. 1 = Register Res
 const uint8_t R0x00_PUD_Bit = 0b00000010;    // Power up digital circuit. 1 = Power up the chip digital logic, 0 = power down (default)
 const uint8_t R0x00_PUA_Bit = 0b00000100;    // Power up analog circuit. 1 = Power up the chip analog circuits (PUD must be 1). 0 = Power down (default)
 const uint8_t R0x00_PUR_Bit = 0b00001000;    // Power up ready (Read Only Status). 1 = Power Up ready, 0 = Power down, not ready
-const uint8_t R0x00_CS_Bit = 0b00010000;     // Cycle start. Synchronize conversion to the rising edge of this registe
+const uint8_t R0x00_CS_Bit = 0b00010000;     // Cycle start. Synchronize conversion to the rising edge of this register
 const uint8_t R0x00_CR_Bit = 0b00100000;     // Cycle ready (Read only Status). 1 = ADC DATA is ready
 const uint8_t R0x00_OSCS_Bit = 0b01000000;   // System clock source select. 1 = External Crystal, 0 = Internal RC oscillator (default)
 const uint8_t R0x00_AVDDS_Bit = 0b10000000;  // AVDD source select. 1 = Internal LDO, 0 = AVDD pin input (default)
@@ -48,9 +48,9 @@ const uint8_t R0x02_CAL_ERR_Bit = 0b00001000;
 
 const uint8_t R0x11_TS_Bit = 0b00000010;
 
-const uint8_t R0x1B_PGACHPDIS_Bit = 0b00000001;      // Chopper disable bit. 1 = disabled
-const uint8_t R0x1B_PGA_BUFFER_ENABLE = 0b00100000;  // Enable PGA output buffer
-const uint8_t R0x1B_PGA_LDO_MODE = 0b01000000;       // LDO mode 1 = "improved stability and lower DC gain, can accommodate ESR < 5 ohms (output capacitance)"
+const uint8_t R0x1B_PGACHPDIS_Bit = 0b00000001;      // Chopper disable bit. 1 = disabled TODO: Unused, consider deletion.
+const uint8_t R0x1B_PGA_BUFFER_ENABLE = 0b00100000;  // Enable PGA output buffer. TODO: Unused, consider deletion.
+const uint8_t R0x1B_PGA_LDO_MODE = 0b01000000;       // LDO mode 1 = "improved stability and lower DC gain, can accommodate ESR < 5 ohms (output capacitance)". TODO: Unused, consider deletion.
 
 const uint8_t R0x1C_CAP_ENABLE = 0b10000000;  // Enables PGA output bypass capacitor connected across pins Vin2P Vin2N
 
@@ -170,9 +170,7 @@ static void enableTareInterrupts() {
 static void initPicoADC() {
     adc_init();
     adc_gpio_init(VSYS_INPUT_PIN);
-
-    // Select ADC input 3 (GPIO29)
-    adc_select_input(3);
+    adc_select_input(3); // Select ADC input 3 (GPIO29), which is connected to VSYS
 }
 
 static float getVSYS_volts() {
@@ -183,18 +181,18 @@ static float getVSYS_volts() {
         tally += (uint32_t)adc_read();
     }
 
-    return (float)(tally / sampleCount) * conversion_factor * 3;  // Multiply be three because GPIO29 gives Vsys / 3
+    return (float)(tally / sampleCount) * conversion_factor * 3;  // Multiply by three because GPIO29 gives Vsys / 3
 }
 
 static void initDisplays() {
-    display0DataBuffer[0] = deviceDisplayAddressPointer; // This is just zero, which is the HT16K33 display-driver 'write display' command
+    display0DataBuffer[0] = deviceDisplayAddressPointer;  // This is just zero, which is the HT16K33 display-driver 'write display' command
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceClockEnable, 1, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceRowIntSet, 1, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceDimmingSet, 1, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, display0DataBuffer, 17, false);
     i2c_write_blocking(i2c_default, display0I2CAddress, &deviceDisplayOnSet, 1, false);
 
-    display1DataBuffer[0] = deviceDisplayAddressPointer; // This is just zero, which is the HT16K33 display-driver 'write display' command
+    display1DataBuffer[0] = deviceDisplayAddressPointer;  // This is just zero, which is the HT16K33 display-driver 'write display' command
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceClockEnable, 1, false);
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceRowIntSet, 1, false);
     i2c_write_blocking(i2c_default, display1I2CAddress, &deviceDimmingSet, 1, false);
@@ -332,7 +330,6 @@ static void initADC() {
 
     // 3. After about 200 microseconds, the PWRUP bit will be Logic 1,
     // indicating the device is ready for the remaining programming setup.
-
     sleep_us(300);
     while (!(readADCI2CByte(R0x00_address) & R0x00_PUR_Bit));
 
@@ -365,15 +362,15 @@ static void initADC() {
             001 == 2x
             000 == 1x
     */
-    const uint8_t LDOVoltageMask = 0b00010000; // LDO 3.9V
+    const uint8_t LDOVoltageMask = 0b00010000;  // LDO 3.9V
     writeADCI2CByte(R0x01_address, LDOVoltageMask);
     setADCGain128();
 
     // Ensure LDO mode bit is zero
     writeADCI2CByte(R0x1B_address, 0);
 
-    // Disable ADC chopper, as recommended in datasheet;
-    // ADC output is useless if it's left in its default enabled state.
+    // Disable ADC chopper, as recommended in datasheet; ADC output
+    // is useless if it's left in its default enabled state.
     writeADCI2CByte(R0x15_address, 0b00110000);
 
     // Set sample rate (Rx02 register bits 6 to 0):
@@ -382,7 +379,7 @@ static void initADC() {
     // 010 = 40SPS
     // 001 = 20SPS
     // 000 = 10SPS
-    writeADCI2CByte(R0x02_address, 0b00000000); // 10SPS
+    writeADCI2CByte(R0x02_address, 0b00000000);  // 10SPS
 
     // Wait for LDO to stabilize
     sleep_ms(300);
@@ -425,10 +422,9 @@ static void setDisplayOverflow(uint8_t* const* displayDigitAddresses) {
     *displayDigitAddresses[3] = digitPatternDash;
 }
 
-static bool initialize() {
+static void initialize() {
     stdio_init_all();
-    int rc = pico_led_init();
-    hard_assert(rc == PICO_OK);
+    pico_led_init();
     initGPIO();
     initPicoADC();
     initI2C();
@@ -613,7 +609,7 @@ int main() {
         writeDisplay1DataBuffer();
 
         for (int i = 0; i < sampleCount; i++) {
-            const bool shouldTare = tarePending;  // Capture value so it can't be mutated by an interrupt mid-loop
+            const bool shouldTare = tarePending; // Capture tarePending value so it can't be mutated by an interrupt mid-loop
             tarePending = false;
 
             if (shouldTare) {
@@ -623,8 +619,9 @@ int main() {
                 zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
             }
 
-            int32_t peakToPeakResult = 0;
-            const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
+            // int32_t peakToPeakResult = 0;
+            // const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
+            const int32_t adcReading = averageADC(averagingCount, NULL);
             // peakToPeakResults[i] = peakToPeakResult;
             const double mass = (double)(adcReading - zeroScaleReading) / 420.0;
 
@@ -632,12 +629,13 @@ int main() {
                 lpSamples[j] = lpSamples[j - 1];
             }
 
-            if (shouldTare) {
+            if (!shouldTare) {
+                lpSamples[0] = mass;
+            } else {
+                // Clear out & override now-invalid sample history with zeroed mass reading:
                 for (int l = 0; l < lpFilterCount; l++) {
                     lpSamples[l] = mass;
                 }
-            } else {
-                lpSamples[0] = mass;
             }
 
             double lpFilteredReading = 0;
