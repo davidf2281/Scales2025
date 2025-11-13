@@ -78,6 +78,22 @@ const uint8_t deviceRowIntSet = 0b10100000;
 const uint8_t deviceDimmingSet = 0b11101111;    // Full brightness
 const uint8_t deviceDisplayOnSet = 0b10000001;  // Device ON, blinking OFF.
 
+// enum DisplayTimerState {
+//     initial,
+//     pending,
+//     active
+// };
+
+// enum DisplayTimerState displayTimerState = initial;
+
+enum TareSwitchState {
+    open,
+    closed
+};
+
+enum TareSwitchState tareSwitchState = closed;
+bool tareSwitchHeld = false;
+
 uint8_t display0DataBuffer[17];  // TODO: See if we can de-globalise this
 uint8_t display1DataBuffer[17];  // TODO: See if we can de-globalise this
 
@@ -126,6 +142,52 @@ static void LEDBlinkLong(int repeats, int delay_ms) {
     }
 }
 
+static bool tareSwitchDebounceTimerCallback(__unused struct repeating_timer* t) {
+    static const uint8_t debounceQueueThreshold = 0x7f;
+    static uint8_t debounceQueue = 0xFF;
+    // static uint tareSwitchHoldDetector = 0;
+
+    const bool tareSwitchClosed = gpio_get(TARE_PIN);
+
+    debounceQueue = (debounceQueue << 1) + (tareSwitchClosed ? 1 : 0);
+
+    if (debounceQueue >= debounceQueueThreshold) {
+        tareSwitchState = closed;
+        debounceQueue == debounceQueueThreshold;
+        // tareSwitchHeld = false;
+        // tareSwitchHoldDetector = 0;
+    } else if (debounceQueue == 0) {
+        tareSwitchState = open;
+    }
+
+    printf("Debounce queue %lu:\n", debounceQueue);
+
+    // tareSwitchHoldDetector += tareSwitchValue;
+
+    // if (tareSwitchHoldDetector > 199) {
+    //     // tareSwitchHeld = true;
+    //     tareSwitchHoldDetector = 0;
+    // }
+}
+
+static void checkTareSwitchState() {
+    // static bool previousTareSwitchHeld = false;
+
+    if (tareSwitchState == open) {
+        pico_set_led(true);
+    } else {
+        pico_set_led(false);
+    }
+
+    // if (previousTareSwitchHeld == false && tareSwitchHeld == true) {
+    //     printf("Held\n");
+    // } else if (previousTareSwitchHeld == true && tareSwitchHeld == false) {
+    //     printf("Released\n");
+    // }
+
+    // previousTareSwitchHeld = tareSwitchHeld;
+}
+
 static void initI2C() {
     i2c_init(i2c_default, 100000);
     gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
@@ -134,11 +196,11 @@ static void initI2C() {
     gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
 }
 
-static void tare_pin_callback(uint gpio, uint32_t events) {
-    // printf("IRQ\n");
-    LEDBlink(1);
-    tarePending = true;
-}
+// static void tare_pin_callback(uint gpio, uint32_t events) {
+//     // printf("IRQ\n");
+//     LEDBlink(1);
+//     tarePending = true;
+// }
 
 static void initGPIO() {
     gpio_init(DRDY_PIN);
@@ -156,13 +218,13 @@ static void initGPIO() {
 
 // This function is not called as part of general initialization
 // because we need to give the debounce capacitor time to charge,
-// hence we call it in the main loop after zeroing etc so we don't get
+// hence we call it in the main loop after zeroing to avoid
 // false interrupts.
-static void enableTareInterrupts() {
-    gpio_set_irq_enabled(TARE_PIN, GPIO_IRQ_EDGE_RISE, true);
-    gpio_set_irq_callback(&tare_pin_callback);
-    irq_set_enabled(IO_IRQ_BANK0, true);
-}
+// static void enableTareInterrupts() {
+//     gpio_set_irq_enabled(TARE_PIN, GPIO_IRQ_EDGE_FALL, true);
+//     gpio_set_irq_callback(&tare_pin_callback);
+//     irq_set_enabled(IO_IRQ_BANK0, true);
+// }
 
 // This is the Pico's own internal ADC used to
 // measure VSYS (ie, battery voltage), not
@@ -170,7 +232,7 @@ static void enableTareInterrupts() {
 static void initPicoADC() {
     adc_init();
     adc_gpio_init(VSYS_INPUT_PIN);
-    adc_select_input(3); // Select ADC input 3 (GPIO29), which is connected to VSYS
+    adc_select_input(3);  // Select ADC input 3 (GPIO29), which is connected to VSYS
 }
 
 static float getVSYS_volts() {
@@ -601,7 +663,10 @@ int main() {
 
     const absolute_time_t startTime = get_absolute_time();
 
-    enableTareInterrupts();
+    // enableTareInterrupts();
+
+    struct repeating_timer timer;  // TODO: Put this in an initializer function
+    add_repeating_timer_ms(500, tareSwitchDebounceTimerCallback, NULL, &timer);
 
     while (true) {
         // printf("Vsys is %.2f\n", getVSYS_volts());
@@ -609,7 +674,8 @@ int main() {
         writeDisplay1DataBuffer();
 
         for (int i = 0; i < sampleCount; i++) {
-            const bool shouldTare = tarePending; // Capture tarePending value so it can't be mutated by an interrupt mid-loop
+            checkTareSwitchState();
+            const bool shouldTare = tarePending;  // Capture tarePending value so it can't be mutated by an interrupt mid-loop
             tarePending = false;
 
             if (shouldTare) {
