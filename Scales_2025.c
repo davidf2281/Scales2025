@@ -82,13 +82,6 @@ const uint8_t deviceDimmingSet = 0b11101111;     // Full brightness
 const uint8_t deviceDisplayOnSet = 0b10000001;   // Device ON, blinking OFF.
 const uint8_t deviceDisplayOffSet = 0b10000000;  // Device OFF.
 
-enum TimerDisplayState {
-    disabled,
-    taring,
-    waitingForMassIncrement,
-    timing
-};
-
 enum TareSwitchState {
     open,
     closed,
@@ -96,16 +89,72 @@ enum TareSwitchState {
 };
 
 enum TareSwitchProcessedState {
-    none,
+    processedState_none,
     momentaryReleased,
     longHoldEntered,
     longHold,
     longHoldExited
 };
 
+enum TimerDisplayAction {
+    displayAction_none,
+    startPending,
+    start,
+    run
+};
+
+enum MassDisplayAction {
+    showMass,
+    tare
+};
+
+enum TimerDisplayAction computeTimerDisplayAction(enum TareSwitchProcessedState switchState, double mass) {
+    static enum TareSwitchProcessedState previousSwitchState = processedState_none;
+    static enum TimerDisplayAction previousState = displayAction_none;
+
+    enum TimerDisplayAction action;
+
+    static const double massStartThreshold = 2.0;
+
+    if (switchState == longHoldEntered) {
+        previousState = startPending;
+        action = startPending;
+    } else if (previousState == startPending && (mass < massStartThreshold)) {
+        previousState = startPending;
+        action = displayAction_none;
+    } else if (previousState == startPending && (mass >= massStartThreshold)) {
+        previousState = start;
+        action = start;
+    } else if (previousState == start) {
+        previousState = run;
+        action = run;
+    } else if (previousState == run) {
+        action = run;
+    } else {
+        action = displayAction_none;
+    }
+
+    return action;
+}
+
+enum MassDisplayAction computeMassDisplayAction(enum TareSwitchProcessedState switchState) {
+    switch (switchState) {
+        case momentaryReleased:
+            return tare;
+            break;
+
+        case longHoldExited:
+            return tare;
+            break;
+
+        default:
+            return showMass;
+    }
+}
+
 // Global vars
 enum TareSwitchState global_tareSwitchState = open;
-enum TareSwitchProcessedState global_tareSwitchProcessedState = none;
+enum TareSwitchProcessedState global_tareSwitchProcessedState = processedState_none;
 struct repeating_timer global_tareSwitchPollingTimer;
 
 uint8_t display0DataBuffer[17];  // TODO: See if we can de-globalise this
@@ -194,19 +243,14 @@ static enum TareSwitchProcessedState processTareSwitchState() {
 
     if (previousSwitchState != held && switchState == held) {
         processedState = longHoldEntered;
-        printf("longHoldEntered\n");
     } else if (previousSwitchState == held && switchState == held) {
-        printf("longHold\n");
         processedState = longHold;
     } else if (previousSwitchState == held && switchState != held) {
         processedState = longHoldExited;
-        printf("longHoldExited\n");
     } else if (switchState == open && previousSwitchState == closed) {
         processedState = momentaryReleased;
-        printf("momentaryReleased\n");
     } else {
-        processedState = none;
-        printf("none\n");
+        processedState = processedState_none;
     }
 
     previousSwitchState = switchState;
@@ -655,7 +699,7 @@ static void setDisplayDouble(double value, uint8_t* const* displayDigitAddresses
     }
 }
 
-double getMass(const int averagingCount, const int32_t zeroScaleReading,int32_t* peakToPeak) {
+double getMass(const int averagingCount, const int32_t zeroScaleReading, int32_t* peakToPeak) {
     static const double calibrationValue = 420.0;
     const int32_t adcReading = averageADC(averagingCount, peakToPeak);
     const double mass = (double)(adcReading - zeroScaleReading) / calibrationValue;
@@ -664,8 +708,6 @@ double getMass(const int averagingCount, const int32_t zeroScaleReading,int32_t*
 
 int main() {
     initialize();
-
-    enum TimerDisplayState previousTimerDisplayState = disabled;
 
     setDisplayOverflow(display0DigitAddresses);
     setDisplayOverflow(display1DigitAddresses);
@@ -681,82 +723,90 @@ int main() {
     const int lpFilterCount = 10;
     const int sampleCount = 1;
 
-    // double massReadings[sampleCount];
     double lpSamples[lpFilterCount];
     int32_t peakToPeakResults[sampleCount];
 
     int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
-    // const absolute_time_t startTime = get_absolute_time();
-
     disableTimerDisplay();
 
     while (true) {
-        // printf("Vsys is %.2f\n", getVSYS_volts());
-        // setDisplayDouble((double)getVSYS_volts(), display1DigitAddresses);
-        // writeDisplay1DataBuffer();
-        // TODO: Next: timerDisplayState state logic
-
         const enum TareSwitchProcessedState tareSwitchState = processTareSwitchState();
+        double mass = getMass(averagingCount, zeroScaleReading, NULL);
+        enum MassDisplayAction massDisplayAction = computeMassDisplayAction(tareSwitchState);
 
-        switch (tareSwitchState) {
-            case momentaryReleased:
-                setDisplayOverflow(display0DigitAddresses);
-                writeDisplay0DataBuffer();
-                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
-                zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
-
-                // Clear out & override now-invalid sample history with zeroed mass reading:
-                const double mass = getMass(averagingCount, zeroScaleReading, NULL);
-                for (int l = 0; l < lpFilterCount; l++) {
-                    lpSamples[l] = mass;
-                }
-                break;
-
-            case longHoldEntered:
-                setDisplayOverflow(display0DigitAddresses);
-                writeDisplay0DataBuffer();
-                enableTimerDisplay();
-                setDisplayOverflow(display1DigitAddresses);
-                writeDisplay1DataBuffer();
-                break;
-
-            case longHold:
-                sleep_ms(50);  // TODO: Investigate exact reason for needing this. We'll be in an extremely tight loop otherwise, but why does that cause longHold state never to exit?
-                break;
-
-            case longHoldExited:
-                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
-                zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
-                setDisplayInteger(0, display1DigitAddresses);
-                writeDisplay1DataBuffer();
-                break;
-
-            case none:
-                // int32_t peakToPeakResult = 0;
-                // const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
-                // peakToPeakResults[i] = peakToPeakResult;
-
+        switch (massDisplayAction) {
+            case showMass:
                 for (int j = lpFilterCount - 1; j > 0; j--) {
                     lpSamples[j] = lpSamples[j - 1];
                 }
 
-                lpSamples[0] = getMass(averagingCount, zeroScaleReading, NULL);
+                lpSamples[0] = mass;
 
                 double lpFilteredReading = 0;
                 for (int k = 0; k < lpFilterCount; k++) {
                     lpFilteredReading += (lpSamples[k] / lpFilterCount);
                 }
 
-                // massReadings[i] = mass;
-
                 // When close to zero, clamp display reading to zeroo
                 setDisplayDouble(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading, display0DigitAddresses);
                 writeDisplay0DataBuffer();
                 break;
+
+            case tare:
+                setDisplayOverflow(display0DigitAddresses);
+                writeDisplay0DataBuffer();
+                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
+                zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
+
+                // Clear out & override now-invalid sample history with zeroed mass reading:
+                mass = getMass(averagingCount, zeroScaleReading, NULL);
+                for (int l = 0; l < lpFilterCount; l++) {
+                    lpSamples[l] = mass;
+                }
+                break;
+        }
+
+        enum TimerDisplayAction timerDisplayAction = computeTimerDisplayAction(tareSwitchState, mass);
+
+        switch (timerDisplayAction) {
+            case displayAction_none:
+                break;
+
+            case startPending:
+                enableTimerDisplay();
+                setDisplayInteger(1111, display1DigitAddresses);
+                writeDisplay1DataBuffer();
+                break;
+
+            case start:
+                setDisplayInteger(1234, display1DigitAddresses);
+                writeDisplay1DataBuffer();
+                break;
+                
+            case run:
+                break;
         }
     }
+
     /*
+        // printf("Vsys is %.2f\n", getVSYS_volts());
+        // setDisplayDouble((double)getVSYS_volts(), display1DigitAddresses);
+        // writeDisplay1DataBuffer();
+    */
+
+    /*
+    // double massReadings[sampleCount];
+    // int32_t peakToPeakResult = 0;
+    // const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
+    // peakToPeakResults[i] = peakToPeakResult;
+    // massReadings[i] = mass;
+*/
+
+    /*
+        // const absolute_time_t startTime = get_absolute_time();
+
+
         // Measurements done.
 
         const absolute_time_t endTime = get_absolute_time();
