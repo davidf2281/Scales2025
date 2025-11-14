@@ -590,14 +590,6 @@ static int truncateToIntWithRounding(double value) {
     return (int)value;
 }
 
-// Maximum sleep_ms is just over a minute, so
-// this function allows longer sleep times
-static void sleep_minutes(uint32_t minutes) {
-    for (int i = 0; i < minutes; i++) {
-        sleep_ms(60000);
-    }
-}
-
 // TODO: Fix the '00.01' bug: setDisplayDouble(-0.009) incorrectly shows 00.01 on display
 static void setDisplayDouble(double value, uint8_t* const* displayDigitAddresses) {
     if ((value >= 10000) || (value <= -1000)) {
