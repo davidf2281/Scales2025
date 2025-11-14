@@ -41,7 +41,9 @@ const uint8_t R0x00_CS_Bit = 0b00010000;     // Cycle start. Synchronize convers
 const uint8_t R0x00_CR_Bit = 0b00100000;     // Cycle ready (Read only Status). 1 = ADC DATA is ready
 const uint8_t R0x00_OSCS_Bit = 0b01000000;   // System clock source select. 1 = External Crystal, 0 = Internal RC oscillator (default)
 const uint8_t R0x00_AVDDS_Bit = 0b10000000;  // AVDD source select. 1 = Internal LDO, 0 = AVDD pin input (default)
+
 const uint8_t R0x01_VLDO_Bits = 0b00111000;
+
 const uint8_t R0x02_CHS_Bit = 0b10000000;
 const uint8_t R0x02_CALS_Bit = 0b00000100;
 const uint8_t R0x02_CAL_ERR_Bit = 0b00001000;
@@ -76,8 +78,8 @@ const uint8_t deviceDisplayAddressPointer = 0b00000000;
 const uint8_t deviceClockEnable = 0b00100001;
 const uint8_t deviceClockDisable = 0b00100000;
 const uint8_t deviceRowIntSet = 0b10100000;
-const uint8_t deviceDimmingSet = 0b11101111;    // Full brightness
-const uint8_t deviceDisplayOnSet = 0b10000001;  // Device ON, blinking OFF.
+const uint8_t deviceDimmingSet = 0b11101111;     // Full brightness
+const uint8_t deviceDisplayOnSet = 0b10000001;   // Device ON, blinking OFF.
 const uint8_t deviceDisplayOffSet = 0b10000000;  // Device OFF.
 
 enum TimerDisplayState {
@@ -364,8 +366,8 @@ static int32_t readADC() {
 
     int32_t value = (int32_t)((reading[0] << 16) | (reading[1] << 8) | reading[2]);
 
-    // Extend the sign into the topmost byte with a bitwise left-shift
-    // followed by an arithmetic right-shift:
+    // Extend the sign into the topmost byte with a bitwise
+    // left-shift followed by an arithmetic right-shift:
     value = (value << 8) >> 8;
 
     return value;
@@ -584,7 +586,7 @@ static int truncateToIntWithRounding(double value) {
     const int temp = (int)(value * 10);
 
     if (nthDigit(1, temp) > 4) {
-        return (int)(value) + 1;  //
+        return (int)(value) + 1;
     }
 
     return (int)value;
