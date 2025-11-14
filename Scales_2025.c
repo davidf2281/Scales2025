@@ -100,6 +100,7 @@ enum TimerDisplayState timerDisplayState = disabled;
 enum TareSwitchState tareSwitchState = closed;
 bool tareSwitchHeld = false;
 static bool tarePending = false;
+struct repeating_timer tareSwitchPollingTimer;
 
 uint8_t display0DataBuffer[17];  // TODO: See if we can de-globalise this
 uint8_t display1DataBuffer[17];  // TODO: See if we can de-globalise this
@@ -482,6 +483,10 @@ static void setDisplayOverflow(uint8_t* const* displayDigitAddresses) {
     *displayDigitAddresses[3] = digitPatternDash;
 }
 
+void beginTareSwitchPolling() {
+    add_repeating_timer_ms(10, tareSwitchDebounceTimerCallback, NULL, &tareSwitchPollingTimer);
+}
+
 static void initialize() {
     stdio_init_all();
     pico_led_init();
@@ -490,6 +495,7 @@ static void initialize() {
     initI2C();
     initDisplays();
     initADC();
+    beginTareSwitchPolling();
 }
 
 // Retrieves nth digit from the right, eg:
@@ -653,12 +659,7 @@ int main() {
 
     int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
-    const absolute_time_t startTime = get_absolute_time();
-
-    // enableTareInterrupts();
-
-    struct repeating_timer timer;  // TODO: Put this in an initializer function
-    add_repeating_timer_ms(10, tareSwitchDebounceTimerCallback, NULL, &timer);
+    // const absolute_time_t startTime = get_absolute_time();
 
     disableTimerDisplay();
 
