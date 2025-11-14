@@ -84,7 +84,6 @@ const uint8_t deviceDisplayOffSet = 0b10000000;  // Device OFF.
 
 enum TimerDisplayState {
     disabled,
-    longPressAcknowledged,
     taring,
     waitingForMassIncrement,
     timing
@@ -92,15 +91,22 @@ enum TimerDisplayState {
 
 enum TareSwitchState {
     open,
-    closed
+    closed,
+    held
+};
+
+enum TareSwitchProcessedState {
+    none,
+    momentaryReleased,
+    longHoldEntered,
+    longHold,
+    longHoldExited
 };
 
 // Global vars
-enum TimerDisplayState timerDisplayState = disabled;
-enum TareSwitchState tareSwitchState = closed;
-bool tareSwitchHeld = false;
-static bool tarePending = false;
-struct repeating_timer tareSwitchPollingTimer;
+enum TareSwitchState global_tareSwitchState = open;
+enum TareSwitchProcessedState global_tareSwitchProcessedState = none;
+struct repeating_timer global_tareSwitchPollingTimer;
 
 uint8_t display0DataBuffer[17];  // TODO: See if we can de-globalise this
 uint8_t display1DataBuffer[17];  // TODO: See if we can de-globalise this
@@ -141,56 +147,71 @@ static void LEDBlink(int repeats) {
 }
 
 static bool tareSwitchDebounceTimerCallback(__unused struct repeating_timer* t) {
-    static const uint8_t debounceQueueThreshold = 0x7f;
-    static uint8_t debounceQueue = 0xFF;
+    static bool switchClosed = false;
+    static bool switchHeld = false;
 
-    static const uint tareSwitchHoldThreshold = 100;
-    static uint tareSwitchHoldDetector = 0;
+    static const uint8_t switchDebounceQueueThreshold = 0x7f;
+    static uint8_t switchDebounceQueue = 0xFF;
 
-    const bool tareSwitchClosed = gpio_get(TARE_PIN);
+    static const uint switchHoldThreshold = 100;
+    static uint switchHoldAccumulator = 0;
 
-    debounceQueue = (debounceQueue << 1) + (tareSwitchClosed ? 1 : 0);
+    const bool switchPinLow = !gpio_get(TARE_PIN);  // Pin is normally electrically HIGH
 
-    if (debounceQueue >= debounceQueueThreshold) {
-        tareSwitchState = closed;
-    } else if (debounceQueue == 0) {
-        tareSwitchState = open;
+    switchDebounceQueue = (switchDebounceQueue << 1) + (switchPinLow ? 1 : 0);
+
+    if (switchDebounceQueue >= switchDebounceQueueThreshold) {
+        switchClosed = true;
+    } else if (switchDebounceQueue == 0) {
+        switchClosed = false;
     }
 
-    tareSwitchHoldDetector += (tareSwitchState == open ? 1 : 0);
+    switchHoldAccumulator += (global_tareSwitchState == closed ? 1 : 0);
 
-    if (tareSwitchHoldDetector >= tareSwitchHoldThreshold && tareSwitchState == open) {
-        tareSwitchHoldDetector == tareSwitchHoldThreshold;
-        tareSwitchHeld = true;
-    } else if (tareSwitchState == closed) {
-        tareSwitchHoldDetector = 0;
-        tareSwitchHeld = false;
+    if (switchClosed == true && switchHoldAccumulator >= switchHoldThreshold) {
+        switchHoldAccumulator == switchHoldThreshold;
+        switchHeld = true;
+    } else if (switchClosed == false) {
+        switchHoldAccumulator = 0;
+        switchHeld = false;
+    }
+
+    if (switchClosed == false) {
+        global_tareSwitchState = open;
+    } else if (switchHeld == true) {
+        global_tareSwitchState = held;
+    } else {
+        global_tareSwitchState = closed;
     }
 }
 
-static void checkTareSwitchState() {
-    static enum TareSwitchState previousTareSwitchState = open;
-    static bool previousTareSwitchHeld = false;
+static enum TareSwitchProcessedState processTareSwitchState() {
+    static enum TareSwitchState previousSwitchState = open;
 
-    const enum TareSwitchState localTareSwitchState = tareSwitchState;  // Capture value
-    const bool localTareSwitchHeld = tareSwitchHeld;                    // Capture value
+    const enum TareSwitchState switchState = global_tareSwitchState;  // Capture value
 
-    if (previousTareSwitchHeld == false && localTareSwitchHeld == true) {
-        // Tare switch has entered long hold
-        pico_set_led(true);
+    enum TareSwitchProcessedState processedState;
 
-    } else if (previousTareSwitchHeld == true && localTareSwitchHeld == false) {
-        // Tare switch has been released from long hold
-        pico_set_led(false);
-        tarePending = true;
-
-    } else if (localTareSwitchState == closed && previousTareSwitchState == open) {
-        // Tare switch has been momentarily pressed and released
-        tarePending = true;
+    if (previousSwitchState != held && switchState == held) {
+        processedState = longHoldEntered;
+        printf("longHoldEntered\n");
+    } else if (previousSwitchState == held && switchState == held) {
+        printf("longHold\n");
+        processedState = longHold;
+    } else if (previousSwitchState == held && switchState != held) {
+        processedState = longHoldExited;
+        printf("longHoldExited\n");
+    } else if (switchState == open && previousSwitchState == closed) {
+        processedState = momentaryReleased;
+        printf("momentaryReleased\n");
+    } else {
+        processedState = none;
+        printf("none\n");
     }
 
-    previousTareSwitchState = localTareSwitchState;
-    previousTareSwitchHeld = localTareSwitchHeld;
+    previousSwitchState = switchState;
+
+    return processedState;
 }
 
 static void initI2C() {
@@ -484,7 +505,7 @@ static void setDisplayOverflow(uint8_t* const* displayDigitAddresses) {
 }
 
 void beginTareSwitchPolling() {
-    add_repeating_timer_ms(10, tareSwitchDebounceTimerCallback, NULL, &tareSwitchPollingTimer);
+    add_repeating_timer_ms(10, tareSwitchDebounceTimerCallback, NULL, &global_tareSwitchPollingTimer);
 }
 
 static void initialize() {
@@ -634,6 +655,13 @@ static void setDisplayDouble(double value, uint8_t* const* displayDigitAddresses
     }
 }
 
+double getMass(const int averagingCount, const int32_t zeroScaleReading,int32_t* peakToPeak) {
+    static const double calibrationValue = 420.0;
+    const int32_t adcReading = averageADC(averagingCount, peakToPeak);
+    const double mass = (double)(adcReading - zeroScaleReading) / calibrationValue;
+    return mass;
+}
+
 int main() {
     initialize();
 
@@ -667,51 +695,66 @@ int main() {
         // printf("Vsys is %.2f\n", getVSYS_volts());
         // setDisplayDouble((double)getVSYS_volts(), display1DigitAddresses);
         // writeDisplay1DataBuffer();
-        const enum TimerDisplayState localTimerDisplayState = timerDisplayState;  // Capture value
-        const bool timerDisplayStateHasChanged = (localTimerDisplayState != previousTimerDisplayState);
-
         // TODO: Next: timerDisplayState state logic
 
-        checkTareSwitchState();
-        const bool localTarePending = tarePending;  // Capture value
-        tarePending = false;
+        const enum TareSwitchProcessedState tareSwitchState = processTareSwitchState();
 
-        if (localTarePending) {
-            setDisplayOverflow(display0DigitAddresses);
-            writeDisplay0DataBuffer();
-            sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
-            zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
+        switch (tareSwitchState) {
+            case momentaryReleased:
+                setDisplayOverflow(display0DigitAddresses);
+                writeDisplay0DataBuffer();
+                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
+                zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
+
+                // Clear out & override now-invalid sample history with zeroed mass reading:
+                const double mass = getMass(averagingCount, zeroScaleReading, NULL);
+                for (int l = 0; l < lpFilterCount; l++) {
+                    lpSamples[l] = mass;
+                }
+                break;
+
+            case longHoldEntered:
+                setDisplayOverflow(display0DigitAddresses);
+                writeDisplay0DataBuffer();
+                enableTimerDisplay();
+                setDisplayOverflow(display1DigitAddresses);
+                writeDisplay1DataBuffer();
+                break;
+
+            case longHold:
+                sleep_ms(50);  // TODO: Investigate exact reason for needing this. We'll be in an extremely tight loop otherwise, but why does that cause longHold state never to exit?
+                break;
+
+            case longHoldExited:
+                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
+                zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
+                setDisplayInteger(0, display1DigitAddresses);
+                writeDisplay1DataBuffer();
+                break;
+
+            case none:
+                // int32_t peakToPeakResult = 0;
+                // const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
+                // peakToPeakResults[i] = peakToPeakResult;
+
+                for (int j = lpFilterCount - 1; j > 0; j--) {
+                    lpSamples[j] = lpSamples[j - 1];
+                }
+
+                lpSamples[0] = getMass(averagingCount, zeroScaleReading, NULL);
+
+                double lpFilteredReading = 0;
+                for (int k = 0; k < lpFilterCount; k++) {
+                    lpFilteredReading += (lpSamples[k] / lpFilterCount);
+                }
+
+                // massReadings[i] = mass;
+
+                // When close to zero, clamp display reading to zeroo
+                setDisplayDouble(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading, display0DigitAddresses);
+                writeDisplay0DataBuffer();
+                break;
         }
-
-        // int32_t peakToPeakResult = 0;
-        // const int32_t adcReading = averageADC(averagingCount, &peakToPeakResult);
-        const int32_t adcReading = averageADC(averagingCount, NULL);
-        // peakToPeakResults[i] = peakToPeakResult;
-        const double mass = (double)(adcReading - zeroScaleReading) / 420.0;
-
-        for (int j = lpFilterCount - 1; j > 0; j--) {
-            lpSamples[j] = lpSamples[j - 1];
-        }
-
-        if (!localTarePending) {
-            lpSamples[0] = mass;
-        } else {
-            // Clear out & override now-invalid sample history with zeroed mass reading:
-            for (int l = 0; l < lpFilterCount; l++) {
-                lpSamples[l] = mass;
-            }
-        }
-
-        double lpFilteredReading = 0;
-        for (int k = 0; k < lpFilterCount; k++) {
-            lpFilteredReading += (lpSamples[k] / lpFilterCount);
-        }
-
-        // massReadings[i] = mass;
-
-        // When close to zero, clamp display reading to zeroo
-        setDisplayDouble(((lpFilteredReading < 0.05) && (lpFilteredReading > -0.05)) ? 0.0 : lpFilteredReading, display0DigitAddresses);
-        writeDisplay0DataBuffer();
     }
     /*
         // Measurements done.
