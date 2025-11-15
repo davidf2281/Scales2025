@@ -98,6 +98,7 @@ enum TareSwitchProcessedState {
 
 enum TimerDisplayAction {
     displayAction_none,
+    acknowledgeLongHold,
     startPending,
     start,
     run
@@ -105,6 +106,7 @@ enum TimerDisplayAction {
 
 enum MassDisplayAction {
     showMass,
+    showOverflow,
     tare
 };
 
@@ -116,7 +118,10 @@ enum TimerDisplayAction computeTimerDisplayAction(enum TareSwitchProcessedState 
 
     static const double massStartThreshold = 2.0;
 
-    if (switchState == longHoldEntered) {
+    if ((switchState == longHoldEntered)) {
+        previousState = acknowledgeLongHold;
+        action = acknowledgeLongHold;
+    } else if (switchState == longHoldExited) {
         previousState = startPending;
         action = startPending;
     } else if (previousState == startPending && (mass < massStartThreshold)) {
@@ -143,6 +148,14 @@ enum MassDisplayAction computeMassDisplayAction(enum TareSwitchProcessedState sw
             return tare;
             break;
 
+        case longHoldEntered:
+            return showOverflow;
+            break;
+
+        case longHold:
+            return showOverflow;
+            break;
+
         case longHoldExited:
             return tare;
             break;
@@ -165,13 +178,17 @@ uint8_t* const display0DigitAddresses[] = {
     display0DataBuffer + 1,
     display0DataBuffer + 3,
     display0DataBuffer + 7,
-    display0DataBuffer + 9};
+    display0DataBuffer + 9,
+    display1DataBuffer + 5 /* <- colon */
+};
 
 uint8_t* const display1DigitAddresses[] = {
     display1DataBuffer + 1,
     display1DataBuffer + 3,
     display1DataBuffer + 7,
-    display1DataBuffer + 9};
+    display1DataBuffer + 9,
+    display1DataBuffer + 5 /* <- colon */
+};
 
 uint8_t* const addrDisplay0Colon = display0DataBuffer + 5;
 uint8_t* const addrDisplay1Colon = display1DataBuffer + 5;
@@ -548,6 +565,10 @@ static void setDisplayOverflow(uint8_t* const* displayDigitAddresses) {
     *displayDigitAddresses[3] = digitPatternDash;
 }
 
+static void setTimerDisplayColon(bool on, uint8_t* const* displayDigitAddresses) {
+    *displayDigitAddresses[4] = on ? colonPatternOn : colonPatternOff;
+}
+
 void beginTareSwitchPolling() {
     add_repeating_timer_ms(10, tareSwitchDebounceTimerCallback, NULL, &global_tareSwitchPollingTimer);
 }
@@ -663,6 +684,22 @@ static int truncateToIntWithRounding(double value) {
     return (int)value;
 }
 
+static void setDisplayElapsedTime(int64_t microSeconds, uint8_t* const* displayDigitAddresses) {
+    setTimerDisplayColon(true, displayDigitAddresses);
+    const int seconds = microSeconds / 1000000;
+    const int displaySeconds = seconds % 60;
+    const int displayMinutes = seconds / 60;
+
+    if (displayMinutes > 99) {
+        setDisplayOverflow(displayDigitAddresses);
+        return;
+    }
+
+    // Construct an integer representation showing minutes in leftmost two digits and seconds in rightmost two:
+    const int displayInteger = (displayMinutes * 100) + displaySeconds;
+    setDisplayInteger(displayInteger, displayDigitAddresses);
+}
+
 // TODO: Fix the '00.01' bug: setDisplayDouble(-0.009) incorrectly shows 00.01 on display
 static void setDisplayDouble(double value, uint8_t* const* displayDigitAddresses) {
     if ((value >= 10000) || (value <= -1000)) {
@@ -728,12 +765,16 @@ int main() {
 
     int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
+    absolute_time_t timerStartTime; // Used for calculation of elapsed time on timer display
+
     disableTimerDisplay();
 
     while (true) {
-        const enum TareSwitchProcessedState tareSwitchState = processTareSwitchState();
         double mass = getMass(averagingCount, zeroScaleReading, NULL);
-        enum MassDisplayAction massDisplayAction = computeMassDisplayAction(tareSwitchState);
+
+        const enum TareSwitchProcessedState tareSwitchState = processTareSwitchState();
+
+        const enum MassDisplayAction massDisplayAction = computeMassDisplayAction(tareSwitchState);
 
         switch (massDisplayAction) {
             case showMass:
@@ -753,10 +794,15 @@ int main() {
                 writeDisplay0DataBuffer();
                 break;
 
+            case showOverflow:
+                setDisplayOverflow(display0DigitAddresses);
+                writeDisplay0DataBuffer();
+                break;
+
             case tare:
                 setDisplayOverflow(display0DigitAddresses);
                 writeDisplay0DataBuffer();
-                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations die down
+                sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations (ie peak to peak result) die down
                 zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
                 // Clear out & override now-invalid sample history with zeroed mass reading:
@@ -767,24 +813,31 @@ int main() {
                 break;
         }
 
-        enum TimerDisplayAction timerDisplayAction = computeTimerDisplayAction(tareSwitchState, mass);
+        const enum TimerDisplayAction timerDisplayAction = computeTimerDisplayAction(tareSwitchState, mass);
 
         switch (timerDisplayAction) {
             case displayAction_none:
                 break;
 
-            case startPending:
+            case acknowledgeLongHold:
                 enableTimerDisplay();
-                setDisplayInteger(1111, display1DigitAddresses);
+                setDisplayOverflow(display1DigitAddresses);
+                writeDisplay1DataBuffer();
+                break;
+
+            case startPending:
+                setDisplayElapsedTime(0, display1DigitAddresses);
                 writeDisplay1DataBuffer();
                 break;
 
             case start:
-                setDisplayInteger(1234, display1DigitAddresses);
-                writeDisplay1DataBuffer();
+                timerStartTime = get_absolute_time();
                 break;
-                
+
             case run:
+                const int64_t elapsedTime = absolute_time_diff_us(timerStartTime, get_absolute_time());
+                setDisplayElapsedTime(elapsedTime, display1DigitAddresses);
+                writeDisplay1DataBuffer();
                 break;
         }
     }
