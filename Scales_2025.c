@@ -70,10 +70,13 @@ const uint8_t digitPattern9 = 0b01101111;
 const uint8_t digitPatternOff = 0b00000000;
 const uint8_t digitPatternDash = 0b01000000;
 const uint8_t digitPatternAllSegmentsOn = 0b11111111;
+
 const uint8_t digitMaskDecimalPointOn = 0b10000000;
 const uint8_t digitMaskDecimalPointOff = 0b01111111;
+
 const uint8_t colonPatternOn = 0b00000010;
 const uint8_t colonPatternOff = 0b00000000;
+
 const uint8_t deviceDisplayAddressPointer = 0b00000000;
 const uint8_t deviceClockEnable = 0b00100001;
 const uint8_t deviceClockDisable = 0b00100000;
@@ -761,7 +764,7 @@ int main() {
     const int sampleCount = 1;
 
     double lpSamples[lpFilterCount];
-    int32_t peakToPeakResults[sampleCount];
+    // int32_t peakToPeakResults[sampleCount];
 
     int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
