@@ -70,6 +70,11 @@ const uint8_t digitPattern9 = 0b01101111;
 const uint8_t digitPatternOff = 0b00000000;
 const uint8_t digitPatternDash = 0b01000000;
 const uint8_t digitPatternAllSegmentsOn = 0b11111111;
+const uint8_t digitPatternL = 0b00111000;
+const uint8_t digitPatternO = 0b01011100;
+const uint8_t digitPatternB = 0b01111100;
+const uint8_t digitPatternA = 0b01110111;
+const uint8_t digitPatternT = 0b01111000;
 
 const uint8_t digitMaskDecimalPointOn = 0b10000000;
 const uint8_t digitMaskDecimalPointOff = 0b01111111;
@@ -568,6 +573,34 @@ static void setDisplayOverflow(uint8_t* const* displayDigitAddresses) {
     *displayDigitAddresses[3] = digitPatternDash;
 }
 
+static void setDisplaysLoBatt() {
+    *display0DigitAddresses[0] = digitPatternOff;
+    *display0DigitAddresses[1] = digitPatternL;
+    *display0DigitAddresses[2] = digitPatternO;
+    *display0DigitAddresses[3] = digitPatternOff;
+    *display0DigitAddresses[4] = colonPatternOff;
+
+    *display1DigitAddresses[0] = digitPatternB;
+    *display1DigitAddresses[1] = digitPatternA;
+    *display1DigitAddresses[2] = digitPatternT;
+    *display1DigitAddresses[3] = digitPatternT;
+    *display1DigitAddresses[4] = colonPatternOff;
+}
+
+static void setDisplaysBlank() {
+    *display0DigitAddresses[0] = digitPatternOff;
+    *display0DigitAddresses[1] = digitPatternOff;
+    *display0DigitAddresses[2] = digitPatternOff;
+    *display0DigitAddresses[3] = digitPatternOff;
+    *display0DigitAddresses[4] = colonPatternOff;
+
+    *display1DigitAddresses[0] = digitPatternOff;
+    *display1DigitAddresses[1] = digitPatternOff;
+    *display1DigitAddresses[2] = digitPatternOff;
+    *display1DigitAddresses[3] = digitPatternOff;
+    *display1DigitAddresses[4] = colonPatternOff;
+}
+
 static void setTimerDisplayColon(bool on, uint8_t* const* displayDigitAddresses) {
     *displayDigitAddresses[4] = on ? colonPatternOn : colonPatternOff;
 }
@@ -750,9 +783,7 @@ int main() {
     initialize();
 
     setDisplayOverflow(display0DigitAddresses);
-    setDisplayOverflow(display1DigitAddresses);
     writeDisplay0DataBuffer();
-    writeDisplay1DataBuffer();
 
     selectADCChannel(0);
     setADCGain128();
@@ -768,7 +799,9 @@ int main() {
 
     int32_t zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
-    absolute_time_t timerStartTime; // Used for calculation of elapsed time on timer display
+    bool batteryCheckPending = true;
+    absolute_time_t batteryCheckStartTime = get_absolute_time();
+    absolute_time_t timerStartTime;  // Used for calculation of elapsed time on timer display
 
     disableTimerDisplay();
 
@@ -808,7 +841,7 @@ int main() {
                 sleep_ms(500);  // Wait for any movement to settle. TODO: Think about finessing this by reading ADC until oscillations (ie peak to peak result) die down
                 zeroScaleReading = averageADC(averagingCount + lpFilterCount, NULL);
 
-                // Clear out & override now-invalid sample history with zeroed mass reading:
+                // Clear out & overwrite now-invalid sample history with zeroed mass reading:
                 mass = getMass(averagingCount, zeroScaleReading, NULL);
                 for (int l = 0; l < lpFilterCount; l++) {
                     lpSamples[l] = mass;
@@ -843,6 +876,23 @@ int main() {
                 writeDisplay1DataBuffer();
                 break;
         }
+
+        if (batteryCheckPending) {
+            const float vBatt = getVSYS_volts();
+            if (vBatt < 4.4) {
+                enableTimerDisplay();
+                setDisplaysLoBatt();
+                writeDisplay0DataBuffer();
+                writeDisplay1DataBuffer();
+                sleep_ms(2000);
+                setDisplaysBlank();
+                writeDisplay0DataBuffer();
+                writeDisplay1DataBuffer();
+            }
+            batteryCheckStartTime = get_absolute_time();
+        }
+
+        batteryCheckPending = (absolute_time_diff_us(batteryCheckStartTime, get_absolute_time())) >= 10000000 /* ten seconds*/;
     }
 
     /*
